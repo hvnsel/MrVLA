@@ -1,0 +1,20 @@
+# Activation collection output
+activations/
+checkpoints/
+*.npz
+*.h5
+
+# LIBERO / datasets
+LIBERO/
+modified_libero_rlds/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Misc
+*.log
+.DS_Store

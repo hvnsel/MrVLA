@@ -1,0 +1,23 @@
+# Core: OpenVLA inference + activation collection
+# Install torch separately for your CUDA version, e.g.:
+#   pip install torch==2.2.0 --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+transformers==4.40.1
+tokenizers>=0.15.0
+timm==0.9.10
+accelerate>=0.30.0
+pillow>=10.0.0
+numpy>=1.24.0
+tqdm>=4.66.0
+
+# Optional but recommended for fast attention (OpenVLA was trained with it):
+#   pip install flash-attn==2.5.5 --no-build-isolation
+# flash-attn
+
+# --- LIBERO closed-loop rollouts (only needed for --source libero) ---
+# Install the LIBERO benchmark separately:
+#   git clone https://github.com/Lifelong-Robot-Learning/LIBERO && cd LIBERO && pip install -e .
+# That pulls in robosuite + mujoco. Listed here for reference, not installed by default:
+# robosuite==1.4.1
+# bddl
+# h5py
