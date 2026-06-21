@@ -47,11 +47,37 @@ def _invert_gripper_action(action: np.ndarray) -> np.ndarray:
     return action
 
 
-def _get_libero_image(obs) -> Image.Image:
-    """Extract and orient the agentview image as OpenVLA expects (224 handled by processor)."""
+def _resize_libero_image(img: Image.Image, size: int = 224) -> Image.Image:
+    """Resize to the OpenVLA input resolution with LANCZOS (matches the train-time transform)."""
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def _center_crop(img: Image.Image, crop_scale: float = 0.9) -> Image.Image:
+    """Crop the central ``crop_scale`` *area* fraction and resize back to the input size.
+
+    Mirrors OpenVLA's eval-time crop for libero-finetuned checkpoints, which were trained
+    with random crops at 90% area per sample.
+    """
+    w, h = img.size
+    side = crop_scale ** 0.5
+    cw, ch = int(w * side), int(h * side)
+    left, top = (w - cw) // 2, (h - ch) // 2
+    return img.crop((left, top, left + cw, top + ch)).resize((w, h), Image.LANCZOS)
+
+
+def _get_libero_image(obs, center_crop: bool = True) -> Image.Image:
+    """Extract, orient, resize and (optionally) center-crop the agentview image.
+
+    Matches the OpenVLA LIBERO eval pipeline: upside-down flip, LANCZOS resize to 224,
+    then a central-90%-area crop for the libero-finetuned checkpoints.
+    """
     img = obs["agentview_image"]
     img = img[::-1, ::-1]  # LIBERO renders upside-down relative to training data
-    return Image.fromarray(np.ascontiguousarray(img))
+    pil = Image.fromarray(np.ascontiguousarray(img))
+    pil = _resize_libero_image(pil, size=224)
+    if center_crop:
+        pil = _center_crop(pil, crop_scale=0.9)
+    return pil
 
 
 def collect_libero(
@@ -69,6 +95,7 @@ def collect_libero(
     camera_res: int = 256,
     max_tasks: int | None = None,
     store_only_success: bool = False,
+    center_crop: bool = True,
 ) -> int:
     """Run closed-loop rollouts across a LIBERO task suite and store activations.
 
@@ -124,7 +151,7 @@ def collect_libero(
                     step += 1
                     continue
 
-                image = _get_libero_image(obs)
+                image = _get_libero_image(obs, center_crop=center_crop)
                 action, acts = predict_and_capture(
                     model, processor, collector, image, task_description, device, unnorm_key
                 )

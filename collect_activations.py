@@ -78,6 +78,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-tasks", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--store-only-success", action="store_true")
+    p.add_argument(
+        "--center-crop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Apply the central-90%%-area crop the openvla-7b-finetuned-libero-* models "
+            "were trained with. Default on; pass --no-center-crop for the base openvla-7b."
+        ),
+    )
     return p
 
 
@@ -147,6 +156,7 @@ def main() -> None:
                 max_tasks=args.max_tasks,
                 seed=args.seed,
                 store_only_success=args.store_only_success,
+                center_crop=args.center_crop,
             )
     finally:
         collector.remove()
