@@ -1,5 +1,7 @@
 """Lightweight data sources for activation collection (no simulator required)."""
 
+# just to be used for smoke test
+
 from __future__ import annotations
 
 import os
@@ -15,8 +17,8 @@ _IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 def collect_from_image_dir(
     model,
     processor,
-    collector,
-    writer,
+    collector, # expects ActivationCollector instance
+    writer, # expects ShardedActivationWriter instance
     image_dir: str,
     instruction: str,
     device: str,

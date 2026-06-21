@@ -47,11 +47,11 @@ class ShardedActivationWriter:
         self.pool = pool
         self.extra_meta = extra_meta or {}
 
-        self._acts: list[np.ndarray] = []
-        self._episode: list[int] = []
-        self._timestep: list[int] = []
-        self._task_id: list[int] = []
-        self._success: list[int] = []
+        self._acts: list[np.ndarray] = [] # list of per-timestep activations, each of shape [L, H] where L is the number of layers and H is the hidden dimension
+        self._episode: list[int] = [] # list of global episode indices, one per timestep
+        self._timestep: list[int] = [] # list of step indices within the episode, one per timestep
+        self._task_id: list[int] = [] # list of task identifiers, one per timestep
+        self._success: list[int] = [] # list indicating if the episode succeeded (1/0) or unknown (-1), one per timestep
 
         self._shard_idx = 0
         self.total_samples = 0

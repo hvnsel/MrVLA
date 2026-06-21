@@ -73,7 +73,7 @@ def get_hidden_dim(layers: torch.nn.ModuleList) -> int:
     """Infer hidden size from the first decoder layer's parameters."""
     for p in layers[0].parameters():
         if p.dim() >= 1:
-            return p.shape[-1]
+            return p.shape[-1] # [B, S, H] -> return H, the hidden dimension
     raise RuntimeError("Could not infer hidden dimension from decoder layer.")
 
 
@@ -88,7 +88,7 @@ def build_inputs(processor, image: Image.Image, instruction: str, device: str):
 def predict_and_capture(
     model,
     processor,
-    collector,
+    collector, # expects ActivationCollector instance
     image: Image.Image,
     instruction: str,
     device: str,

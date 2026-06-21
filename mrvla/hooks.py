@@ -17,8 +17,8 @@ class ActivationCollector:
 
     def __init__(
         self,
-        layers: torch.nn.ModuleList,
-        layer_indices: list[int] | None = None,
+        layers: torch.nn.ModuleList, # a list of layers which our hooks will be registered on
+        layer_indices: list[int] | None = None, # the indices of the layers on which to register hooks
         pool: str = "mean",
         dtype: torch.dtype = torch.float16,
     ):
@@ -31,14 +31,17 @@ class ActivationCollector:
         self.layer_indices = layer_indices
         self.pool = pool
         self.dtype = dtype
-        self._buffers: dict[int, torch.Tensor] = {}
-        self._handles: list[torch.utils.hooks.RemovableHandle] = []
+        self._buffers: dict[int, torch.Tensor] = {} # stores pooled activations where key is the int layer index and the value is the pooled activation tensor for that layer
+        self._handles: list[torch.utils.hooks.RemovableHandle] = [] # a list of handles for the registered forward hooks, used to remove the hooks later
 
         for idx in layer_indices:
-            handle = layers[idx].register_forward_hook(self._make_hook(idx))
+            # attach hooks to specified layers and append to the list of handles
+            handle = layers[idx].register_forward_hook(self._make_hook(idx)) 
             self._handles.append(handle)
 
     def _make_hook(self, idx: int):
+        # return a hook function that captures the prefill activation for the specified int layer index
+
         def hook(_module, _inputs, output):
             # Decoder layers return a tuple; hidden states are element 0: [B, S, H].
             hidden = output[0] if isinstance(output, tuple) else output
@@ -71,6 +74,8 @@ class ActivationCollector:
         return mats.permute(1, 0, 2).numpy()
 
     def _stacked(self) -> torch.Tensor:
+        # stack the pooled activations tensors over all specified layers across the 0 dimension
+        
         missing = [i for i in self.layer_indices if i not in self._buffers]
         if missing:
             raise RuntimeError(
