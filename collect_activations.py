@@ -10,7 +10,15 @@ Smoke test on a folder of images (no simulator needed):
         --unnorm-key bridge_orig \
         --out ./activations/smoke
 
-Closed-loop LIBERO rollouts:
+Demo-dataset replay for SAE training + generality metrics (matches arXiv 2603.19183):
+    python collect_activations.py --source libero-demos \
+        --model openvla/openvla-7b-finetuned-libero-goal \
+        --task-suite libero_goal \
+        --unnorm-key libero_goal \
+        --layers 0,8,16,24,31 \
+        --out ./activations/libero_goal_demos
+
+Closed-loop LIBERO rollouts (for steering / on-policy analysis, not SAE training):
     python collect_activations.py --source libero \
         --model openvla/openvla-7b-finetuned-libero-spatial \
         --task-suite libero_spatial \
@@ -27,6 +35,7 @@ import torch
 
 from mrvla.hooks import ActivationCollector
 from mrvla.libero_collect import collect_libero
+from mrvla.libero_demos import collect_libero_demos
 from mrvla.model_utils import get_hidden_dim, load_openvla, locate_decoder_layers
 from mrvla.sources import collect_from_image_dir
 from mrvla.store import ShardedActivationWriter
@@ -53,7 +62,16 @@ def parse_layers(spec: str | None, num_layers: int) -> list[int]:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", choices=["images", "libero"], required=True)
+    p.add_argument(
+        "--source",
+        choices=["images", "libero", "libero-demos"],
+        required=True,
+        help=(
+            "'libero-demos' replays the fine-tuning demonstration HDF5s through "
+            "the model (matches arXiv 2603.19183 §A.1.3 for SAE training + "
+            "generality metrics). 'libero' runs closed-loop rollouts instead."
+        ),
+    )
     p.add_argument("--model", required=True, help="HF model id or local path to an OpenVLA checkpoint.")
     p.add_argument("--out", required=True, help="Output directory for activation shards.")
     p.add_argument("--device", default="cuda:0")
@@ -71,9 +89,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--instruction", default=None)
     p.add_argument("--limit", type=int, default=None)
 
-    # libero source
+    # libero source (shared by --source libero and --source libero-demos)
     p.add_argument("--task-suite", default="libero_spatial")
-    p.add_argument("--trials-per-task", type=int, default=20)
+    p.add_argument("--trials-per-task", type=int, default=20,
+                   help="--source libero only: number of rollouts per task.")
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--max-tasks", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
@@ -87,6 +106,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "were trained with. Default on; pass --no-center-crop for the base openvla-7b."
         ),
     )
+
+    # libero-demos source
+    p.add_argument("--max-demos-per-task", type=int, default=None,
+                   help="--source libero-demos only: cap demos loaded per task.")
+    p.add_argument("--max-steps-per-demo", type=int, default=None,
+                   help="--source libero-demos only: cap timesteps replayed per demo.")
+    p.add_argument("--image-key", default=None,
+                   help="--source libero-demos only: HDF5 obs key for the agentview camera. "
+                        "Auto-detected if omitted.")
     return p
 
 
@@ -143,7 +171,7 @@ def main() -> None:
                 unnorm_key=args.unnorm_key,
                 limit=args.limit,
             )
-        else:  # libero
+        elif args.source == "libero":
             if not args.unnorm_key:
                 raise SystemExit("--unnorm-key is required for --source libero (e.g. libero_spatial)")
             n = collect_libero(
@@ -156,6 +184,22 @@ def main() -> None:
                 max_tasks=args.max_tasks,
                 seed=args.seed,
                 store_only_success=args.store_only_success,
+                center_crop=args.center_crop,
+            )
+        else:  # libero-demos
+            if not args.unnorm_key:
+                raise SystemExit(
+                    "--unnorm-key is required for --source libero-demos (e.g. libero_goal)"
+                )
+            n = collect_libero_demos(
+                model, processor, collector, writer,
+                task_suite_name=args.task_suite,
+                unnorm_key=args.unnorm_key,
+                device=args.device,
+                max_tasks=args.max_tasks,
+                max_demos_per_task=args.max_demos_per_task,
+                max_steps_per_demo=args.max_steps_per_demo,
+                image_key=args.image_key,
                 center_crop=args.center_crop,
             )
     finally:

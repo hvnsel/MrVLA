@@ -102,10 +102,9 @@ class ShardedActivationWriter:
         self._timestep.clear()
         self._task_id.clear()
         self._success.clear()
+        self._write_manifest()  # checkpoint after every shard so a killed job leaves a valid manifest
 
-    def close(self) -> None:
-        """Flush remaining samples and write the manifest."""
-        self.flush()
+    def _write_manifest(self) -> None:
         manifest = {
             "model_name": self.model_name,
             "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -121,6 +120,11 @@ class ShardedActivationWriter:
         }
         with open(os.path.join(self.out_dir, "manifest.json"), "w") as f:
             json.dump(manifest, f, indent=2)
+
+    def close(self) -> None:
+        """Flush remaining samples and write the manifest."""
+        self.flush()
+        self._write_manifest()
 
     def __enter__(self) -> "ShardedActivationWriter":
         return self

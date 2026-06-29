@@ -104,6 +104,14 @@ def predict_and_capture(
     inputs = build_inputs(processor, image, instruction, device)
     collector.reset()
 
+    # OpenVLA's predict_action() appends a trailing token (29871) to input_ids when the
+    # prompt does not already end with it, but it does NOT extend any attention_mask we
+    # pass in. That leaves the attention mask one token shorter than the multimodal
+    # embeddings (text + 256 image patches), which crashes the Llama attention with an
+    # off-by-one (e.g. 279 vs 278). Drop attention_mask so generate() rebuilds a
+    # correctly-sized one AFTER the append.
+    inputs.pop("attention_mask", None)
+
     action = None
     if unnorm_key is not None:
         action = model.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
