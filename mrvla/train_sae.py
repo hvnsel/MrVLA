@@ -52,7 +52,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +234,26 @@ def sae_loss(x_norm: torch.Tensor, x_hat_norm: torch.Tensor,
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
+def load_all_activations(acts_dir: str) -> torch.Tensor:
+    """Load every shard once into a single [N, L, H] float16 tensor.
+
+    Kept in float16 to halve RAM (~2.6 GB for 63k×5×4096); per-layer slices are
+    cast to float32 on demand by ``slice_layer``.
+    """
+    import glob
+    shards = sorted(glob.glob(os.path.join(acts_dir, "shard_*.npz")))
+    if not shards:
+        raise FileNotFoundError(f"No shards found in {acts_dir!r}")
+    chunks = [np.load(p)["acts"] for p in shards]   # each [n_i, L, H] float16
+    full = np.concatenate(chunks, axis=0)
+    return torch.from_numpy(full)                   # [N, L, H] float16
+
+
+def slice_layer(all_acts: torch.Tensor, layer_pos: int) -> torch.Tensor:
+    """Return [N, d] float32 view for one captured layer position."""
+    return all_acts[:, layer_pos, :].to(torch.float32).contiguous()
+
+
 def load_layer_activations(acts_dir: str, layer_pos: int) -> torch.Tensor:
     """Load all shard activations for one layer index position and return [N, d] float32."""
     import glob
@@ -265,8 +284,15 @@ def train_one_layer(
     out_dir: str,
     cfg: dict,
     device: str,
+    resume_ckpt: str | None = None,
 ) -> dict:
-    """Train a single SAE. Returns a log dict."""
+    """Train a single SAE. Returns a log dict.
+
+    If ``resume_ckpt`` is provided, loads W_enc/W_dec/b_pre/steps_since_active from
+    that .pt file and skips geometric-median init. The Adam optimizer is
+    re-initialised (we don't checkpoint optimizer state); a few warmup steps are
+    needed for momentum to rebuild but with lr=1e-4 this is fine.
+    """
     os.makedirs(out_dir, exist_ok=True)
     d = X.shape[1]
     n_features = max(1, int(d * cfg["expansion_ratio"]))
@@ -277,13 +303,26 @@ def train_one_layer(
     model = TopKSAE(d, n_features, k=cfg["k"], k_aux=cfg["k_aux"],
                     dead_steps_threshold=cfg["dead_steps_threshold"]).to(device)
 
-    # ------ Init b_pre from geometric median ----------------------------
-    n_geo = min(cfg["geo_median_samples"], len(X))
-    idx = torch.randperm(len(X))[:n_geo]
-    geo_sample = X[idx].to(device)
-    with torch.no_grad():
-        model.b_pre.data = geometric_median(geo_sample)
-    del geo_sample
+    start_epoch = 0
+    if resume_ckpt is not None:
+        print(f"[SAE]   resuming from {resume_ckpt}")
+        ck = torch.load(resume_ckpt, map_location=device, weights_only=False)
+        with torch.no_grad():
+            model.W_enc.data.copy_(ck["W_enc"].to(device))
+            model.W_dec.data.copy_(ck["W_dec"].to(device))
+            model.b_pre.data.copy_(ck["b_pre"].to(device))
+            if "steps_since_active" in ck:
+                model.steps_since_active.copy_(ck["steps_since_active"].to(device))
+        start_epoch = int(ck.get("epoch", -1)) + 1
+        print(f"[SAE]   loaded; resuming at epoch {start_epoch}")
+    else:
+        # ------ Init b_pre from geometric median ------------------------
+        n_geo = min(cfg["geo_median_samples"], len(X))
+        idx = torch.randperm(len(X))[:n_geo]
+        geo_sample = X[idx].to(device)
+        with torch.no_grad():
+            model.b_pre.data = geometric_median(geo_sample)
+        del geo_sample
 
     # ------ c_mse: variance of the *normalised* input ------------------
     # The loss is computed in unit-norm space, so the normaliser must be too.
@@ -308,7 +347,7 @@ def train_one_layer(
     log = {"layer_idx": layer_idx, "n_features": n_features, "d": d,
            "n_samples": len(X), "epochs": [], "config": cfg}
 
-    for epoch in range(cfg["epochs"]):
+    for epoch in range(start_epoch, cfg["epochs"]):
         model.train()
         epoch_recon = 0.0
         epoch_loss = 0.0
@@ -350,17 +389,43 @@ def train_one_layer(
         log["epochs"].append(epoch_log)
 
         if epoch % 10 == 0 or epoch == cfg["epochs"] - 1:
-            print(f"  epoch {epoch:3d}/{cfg['epochs']} | "
+            print(f"  [layer {layer_idx:2d}] epoch {epoch:4d}/{cfg['epochs']} | "
                   f"loss={mean_loss:.4f} recon={mean_recon:.4f} "
-                  f"dead={dead_frac:.3f} | {elapsed:.1f}s")
+                  f"dead={dead_frac:.3f} | {elapsed:.1f}s", flush=True)
+        else:
+            print(f"  [layer {layer_idx:2d}] epoch {epoch:4d} | "
+                  f"loss={mean_loss:.4f}", flush=True)
 
-    # ------ Save checkpoint -------------------------------------------
+        # Periodic checkpoint every 100 epochs so a killed job loses at most ~100 epochs.
+        # Atomic write: save to .tmp, then rename.
+        if epoch % 100 == 0 or epoch == cfg["epochs"] - 1:
+            model.eval()
+            ckpt = {
+                "W_enc": model.W_enc.data.cpu(),
+                "W_dec": model.W_dec.data.cpu(),
+                "b_pre": model.b_pre.data.cpu(),
+                "steps_since_active": model.steps_since_active.cpu(),
+                "epoch": epoch,
+                "config": {**cfg, "layer_idx": layer_idx, "layer_pos": layer_pos,
+                           "d": d, "n_features": n_features},
+            }
+            tmp = os.path.join(out_dir, "checkpoint.tmp.pt")
+            dst = os.path.join(out_dir, "checkpoint.pt")
+            torch.save(ckpt, tmp)
+            os.replace(tmp, dst)
+            with open(os.path.join(out_dir, "train_log.json"), "w") as f:
+                json.dump(log, f, indent=2)
+            print(f"  [layer {layer_idx:2d}] checkpoint @ epoch {epoch} -> {dst}", flush=True)
+            model.train()
+
+    # ------ Final checkpoint (stable name) ----------------------------
     model.eval()
     ckpt = {
         "W_enc": model.W_enc.data.cpu(),        # [d, n_features]
         "W_dec": model.W_dec.data.cpu(),        # [n_features, d]
         "b_pre": model.b_pre.data.cpu(),        # [d]
         "steps_since_active": model.steps_since_active.cpu(),
+        "epoch": cfg["epochs"] - 1,
         "config": {**cfg, "layer_idx": layer_idx, "layer_pos": layer_pos,
                    "d": d, "n_features": n_features},
     }
@@ -395,6 +460,10 @@ def parse_args():
     p.add_argument("--lr", type=float, default=DEFAULTS["lr"])
     p.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     p.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
+    p.add_argument("--resume-from", default=None,
+                   help="Optional path to a previous --out-dir; loads each layer's final.pt "
+                        "and continues training to the new --epochs target. Skip layers "
+                        "whose final.pt epoch is already >= --epochs.")
     return p.parse_args()
 
 
@@ -433,13 +502,39 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
+    # Load all shards ONCE into a [N, L, H] float16 tensor, then slice per layer.
+    # Avoids re-reading every shard for each layer (5x I/O savings).
+    print(f"[SAE] Loading all activations from {args.acts_dir} ...")
+    all_acts = load_all_activations(args.acts_dir)
+    print(f"[SAE]   all_acts shape: {tuple(all_acts.shape)}  dtype: {all_acts.dtype}  "
+          f"size: {all_acts.numel() * all_acts.element_size() / 1e9:.2f} GB")
+
     all_logs = []
     for layer_pos, layer_idx in targets:
-        print(f"\n[SAE] Loading activations for layer {layer_idx} ...")
-        X = load_layer_activations(args.acts_dir, layer_pos)
-        print(f"[SAE]   X shape: {X.shape}  dtype: {X.dtype}")
+        X = slice_layer(all_acts, layer_pos)
+        print(f"\n[SAE] layer {layer_idx} (pos {layer_pos}) | X shape: {X.shape}  dtype: {X.dtype}")
 
         layer_out = os.path.join(args.out_dir, f"layer_{layer_idx:02d}")
+
+        # Resume support: look for an existing checkpoint at --resume-from/layer_NN/final.pt.
+        resume_ckpt = None
+        if args.resume_from is not None:
+            cand = os.path.join(args.resume_from, f"layer_{layer_idx:02d}", "final.pt")
+            if os.path.exists(cand):
+                ck = torch.load(cand, map_location="cpu", weights_only=False)
+                prev_epoch = int(ck.get("epoch", -1))
+                if prev_epoch + 1 >= args.epochs:
+                    print(f"[SAE] layer {layer_idx}: prev epoch {prev_epoch} >= target "
+                          f"{args.epochs - 1}, copying checkpoint without further training")
+                    os.makedirs(layer_out, exist_ok=True)
+                    torch.save(ck, os.path.join(layer_out, "final.pt"))
+                    del X
+                    torch.cuda.empty_cache()
+                    continue
+                resume_ckpt = cand
+            else:
+                print(f"[SAE] layer {layer_idx}: no checkpoint at {cand}; training from scratch")
+
         log = train_one_layer(
             X=X,
             layer_idx=layer_idx,
@@ -447,12 +542,15 @@ def main():
             out_dir=layer_out,
             cfg=cfg,
             device=args.device,
+            resume_ckpt=resume_ckpt,
         )
         all_logs.append(log)
 
         # Free memory before next layer
         del X
         torch.cuda.empty_cache()
+
+    del all_acts
 
     # Write summary
     summary_path = os.path.join(args.out_dir, "summary.json")

@@ -10,6 +10,9 @@ pillow>=10.0.0
 numpy>=1.24.0
 tqdm>=4.66.0
 
+# LoRA fine-tuning (train_lora.py)
+peft>=0.10.0
+
 # Optional but recommended for fast attention (OpenVLA was trained with it):
 #   pip install flash-attn==2.5.5 --no-build-isolation
 # flash-attn

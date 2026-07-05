@@ -1,0 +1,57 @@
+{
+  "layers": {
+    "layer_00": {
+      "layer_idx": 0,
+      "n_features": 2048,
+      "n_memorized": 2045,
+      "n_general": 3,
+      "mem_pct": 99.853515625,
+      "energy_frac": 0.9921110272407532,
+      "norm_frac": 0.9748144149780273
+    },
+    "layer_08": {
+      "layer_idx": 8,
+      "n_features": 2048,
+      "n_memorized": 2039,
+      "n_general": 9,
+      "mem_pct": 99.560546875,
+      "energy_frac": 0.9778570532798767,
+      "norm_frac": 0.9572889804840088
+    },
+    "layer_16": {
+      "layer_idx": 16,
+      "n_features": 2048,
+      "n_memorized": 2036,
+      "n_general": 12,
+      "mem_pct": 99.4140625,
+      "energy_frac": 0.9992484450340271,
+      "norm_frac": 0.9985511898994446
+    },
+    "layer_24": {
+      "layer_idx": 24,
+      "n_features": 2048,
+      "n_memorized": 2035,
+      "n_general": 13,
+      "mem_pct": 99.365234375,
+      "energy_frac": 0.9992618560791016,
+      "norm_frac": 0.9992662668228149
+    },
+    "layer_31": {
+      "layer_idx": 31,
+      "n_features": 2048,
+      "n_memorized": 2012,
+      "n_general": 36,
+      "mem_pct": 98.2421875,
+      "energy_frac": 0.9847429394721985,
+      "norm_frac": 0.9879412055015564
+    }
+  },
+  "ranked_by_energy_frac": [
+    "layer_24",
+    "layer_16",
+    "layer_00",
+    "layer_31",
+    "layer_08"
+  ],
+  "suggested_target": "layer_24"
+}
