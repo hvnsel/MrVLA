@@ -27,6 +27,10 @@ from mrvla.confound_audit import (  # noqa: E402
     spearman,
     spearman_brown,
 )
+from mrvla.episode_generality_variance import (  # noqa: E402
+    per_timestep_count_ratios,
+    per_timestep_ratios,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,43 @@ def test_build_design_shapes():
     assert names[0] == "intercept"
     assert set(blocks) == {"a", "task_id"}
     assert len(blocks["task_id"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Mass-robust (count) score
+# ---------------------------------------------------------------------------
+def test_count_ratio_ignores_magnitude_mass_ratio_does_not():
+    # 2 active features: p=[0.1, 0.9]; boosting the low-p feature's magnitude
+    # drags the MASS ratio down but cannot move the COUNT ratio
+    prob = np.array([0.1, 0.9], dtype=np.float32)
+    is_general = np.array([False, True])
+    z_balanced = np.array([[1.0, 1.0]], dtype=np.float32)
+    z_skewed = np.array([[9.0, 1.0]], dtype=np.float32)
+
+    _, mass_bal, *_ = per_timestep_ratios(z_balanced, is_general, prob)
+    _, mass_skew, *_ = per_timestep_ratios(z_skewed, is_general, prob)
+    assert np.isclose(mass_bal[0], 0.5)
+    assert np.isclose(mass_skew[0], (9 * 0.1 + 1 * 0.9) / 10)  # 0.18
+
+    _, count_bal = per_timestep_count_ratios(z_balanced, is_general, prob)
+    _, count_skew = per_timestep_count_ratios(z_skewed, is_general, prob)
+    assert np.isclose(count_bal[0], 0.5)
+    assert np.isclose(count_skew[0], 0.5)                      # unchanged
+
+
+def test_count_ratio_hard_and_dead_frames():
+    prob = np.array([0.9, 0.8, 0.1, 0.2], dtype=np.float32)
+    is_general = np.array([True, True, False, False])
+    z = np.array([
+        [1.0, 0.0, 3.0, 0.0],   # active {0, 2}: 1 of 2 general
+        [0.0, 0.0, 0.0, 0.0],   # dead frame -> 0
+        [0.5, 0.5, 0.5, 0.5],   # all active: 2 of 4 general
+    ], dtype=np.float32)
+    hard, soft = per_timestep_count_ratios(z, is_general, prob)
+    assert np.allclose(hard, [0.5, 0.0, 0.5])
+    assert np.isclose(soft[0], (0.9 + 0.1) / 2)
+    assert soft[1] == 0.0
+    assert np.isclose(soft[2], prob.mean())
 
 
 # ---------------------------------------------------------------------------
