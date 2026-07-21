@@ -3,8 +3,20 @@
 The per-episode (soft, trimmed) generality score has non-trivial spread.  This
 script asks the question that decides whether reweighting on it means anything:
 is that spread GENERALITY, or is it nuisance structure wearing a generality
-costume?  Concretely, for each layer we regress the score on every episode
-property we can measure that is *not* generality:
+costume?
+
+Two score constructions are audited (--score-mode, default 'both'):
+
+    mass   sum_j z_j p_j / sum_j z_j   magnitude-weighted (the check-1 soft
+           score).  Its numerator is dominated by the near-constant always-on
+           high-P features, so it behaves like const/total_mass and inherits
+           total-mass variance mechanically.
+    count  mean of p over the ACTIVE features (z > 0) — identity only.  With
+           a TopK SAE the denominator is the constant K, so total activation
+           mass cannot enter by construction.
+
+For each layer and mode we regress the score on every episode property we can
+measure that is *not* generality:
 
     T_full      episode length in frames
     task_id     goal identity (LIBERO-Goal task) — as one-hot factors
@@ -58,6 +70,7 @@ try:
         EPS,
         apply_coverage_floor,
         load_coverage,
+        per_timestep_count_ratios,
         per_timestep_ratios,
     )
 except ImportError:  # run directly as `python mrvla/confound_audit.py`
@@ -65,6 +78,7 @@ except ImportError:  # run directly as `python mrvla/confound_audit.py`
         EPS,
         apply_coverage_floor,
         load_coverage,
+        per_timestep_count_ratios,
         per_timestep_ratios,
     )
 
@@ -294,11 +308,20 @@ def audit_layer(tab: dict[str, np.ndarray]) -> dict:
         "residual_first_second": _rel(res_first, res_second),
     }
 
+    # NOTE on the residual reliability flag: when the confounds explain most
+    # of the full score, the first- and second-half residuals are FORCED to
+    # be nearly equal-and-opposite (they must average to the tiny full-score
+    # residual), and even/odd residuals agree trivially because interleaved
+    # halves both track the full score.  A genuinely stable confound-free
+    # trait therefore has to show BOTH high even/odd reliability AND a
+    # non-negative first/second ICC — a strongly negative first/second value
+    # is the fingerprint of the forced anticorrelation, not of signal.
     stats["verdict"] = {
         "mostly_confound": bool(r2 >= 0.8),
         "reliable_residual": bool(
             stats["reliability"]["residual_even_odd"]["r_spearman_brown"]
-            >= 0.5),
+            >= 0.5
+            and stats["reliability"]["residual_first_second"]["icc"] > 0.0),
     }
     return stats, resid
 
@@ -307,15 +330,16 @@ def audit_layer(tab: dict[str, np.ndarray]) -> dict:
 # Plotting
 # ---------------------------------------------------------------------------
 def plot_layer(layer_idx: int, tab: dict, stats: dict, resid: np.ndarray,
-               out_path: str):
+               out_path: str, mode: str = "mass"):
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     score = tab["score"]
+    ylabel = f"{mode} soft trimmed score"
 
     for ax, name in zip(axes.flat, CONTINUOUS_CONFOUNDS):
         u = stats["univariate"][name]
         ax.scatter(tab[name], score, s=8, alpha=0.5, color="#4c72b0")
         ax.set_xlabel(name)
-        ax.set_ylabel("soft trimmed score")
+        ax.set_ylabel(ylabel)
         ax.set_title(f"score vs {name}\n"
                      f"pearson={u['pearson']:.3f}  spearman={u['spearman']:.3f}",
                      fontsize=10)
@@ -326,7 +350,7 @@ def plot_layer(layer_idx: int, tab: dict, stats: dict, resid: np.ndarray,
     ax.set_xticks(range(1, len(tasks) + 1))
     ax.set_xticklabels([str(t) for t in tasks])
     ax.set_xlabel("task_id")
-    ax.set_ylabel("soft trimmed score")
+    ax.set_ylabel(ylabel)
     ax.set_title(f"score by goal   eta^2={stats['task_eta2']:.3f}", fontsize=10)
 
     ax = axes.flat[5]
@@ -342,7 +366,7 @@ def plot_layer(layer_idx: int, tab: dict, stats: dict, resid: np.ndarray,
     ax.legend(fontsize=8)
 
     fig.suptitle(
-        f"Layer {layer_idx:02d} confound audit  |  OLS R^2="
+        f"Layer {layer_idx:02d} confound audit ({mode} score)  |  OLS R^2="
         f"{stats['ols']['r2']:.3f} (adj {stats['ols']['adj_r2']:.3f})  |  "
         f"residual std={stats['ols']['residual_std']:.5f}",
         fontsize=12)
@@ -363,14 +387,23 @@ def main():
     ap.add_argument("--layers", default="0,8,16,24,31")
     ap.add_argument("--coverage-floor", type=float, default=0.1)
     ap.add_argument("--trim-frac", type=float, default=0.10)
+    ap.add_argument("--score-mode", default="both",
+                    choices=("mass", "count", "both"),
+                    help="mass  = magnitude-weighted soft ratio (sum z*p / "
+                         "sum z; mechanically coupled to total mass); "
+                         "count = mass-robust soft ratio (mean p over active "
+                         "features; identity only). 'both' audits the two "
+                         "side by side.")
     args = ap.parse_args()
 
     layers = [int(x) for x in args.layers.split(",") if x.strip() != ""]
+    modes = ["mass", "count"] if args.score_mode == "both" else [args.score_mode]
     os.makedirs(args.out_dir, exist_ok=True)
 
     summary = {"codes_dir": args.codes_dir,
                "generality_dir": args.generality_dir,
                "score": "soft trimmed (coverage-floored)",
+               "score_modes": modes,
                "coverage_floor": args.coverage_floor,
                "trim_frac": args.trim_frac,
                "home_cosine_threshold": HOME_COSINE_THRESHOLD,
@@ -398,63 +431,75 @@ def main():
                   f"{int((~is_general).sum() - n_floored)} features already "
                   f"non-general", flush=True)
 
-        _, ratio_soft_t, *_ = per_timestep_ratios(z, is_general, prob_general)
+        ratios = {}
+        if "mass" in modes:
+            _, ratios["mass"], *_ = per_timestep_ratios(
+                z, is_general, prob_general)
+        if "count" in modes:
+            _, ratios["count"] = per_timestep_count_ratios(
+                z, is_general, prob_general)
 
-        tab = episode_table(z, ratio_soft_t, episode, timestep, task_id,
-                            args.trim_frac)
-        stats, resid = audit_layer(tab)
+        layer_stats = {}
+        for mode in modes:
+            print(f"  --- score mode: {mode} ---", flush=True)
+            tab = episode_table(z, ratios[mode], episode, timestep, task_id,
+                                args.trim_frac)
+            stats, resid = audit_layer(tab)
 
-        print(f"  episodes={stats['n_episodes']}  "
-              f"score mean={stats['score_mean']:.4f} "
-              f"std={stats['score_std']:.4f}", flush=True)
-        print(f"  univariate r (pearson/spearman):", flush=True)
-        for name in CONTINUOUS_CONFOUNDS:
-            u = stats["univariate"][name]
-            print(f"    {name:<10} {u['pearson']:+.3f} / {u['spearman']:+.3f}",
-                  flush=True)
-        print(f"  task eta^2 = {stats['task_eta2']:.3f}", flush=True)
-        print(f"  OLS all-confounds R^2 = {stats['ols']['r2']:.3f} "
-              f"(adj {stats['ols']['adj_r2']:.3f})", flush=True)
-        print(f"  partial R^2:", flush=True)
-        for name, v in stats["partial_r2"].items():
-            if name != "intercept":
-                print(f"    {name:<10} {v:+.4f}", flush=True)
-        rel = stats["reliability"]
-        print(f"  reliability (r_SB / ICC):", flush=True)
-        for key in ("raw_even_odd", "raw_first_second",
-                    "residual_even_odd", "residual_first_second"):
-            r = rel[key]
-            print(f"    {key:<22} {r['r_spearman_brown']:+.3f} / "
-                  f"{r['icc']:+.3f}", flush=True)
-        v = stats["verdict"]
-        print(f"  VERDICT: mostly_confound={v['mostly_confound']}  "
-              f"reliable_residual={v['reliable_residual']}", flush=True)
+            print(f"  episodes={stats['n_episodes']}  "
+                  f"score mean={stats['score_mean']:.4f} "
+                  f"std={stats['score_std']:.4f}", flush=True)
+            print(f"  univariate r (pearson/spearman):", flush=True)
+            for name in CONTINUOUS_CONFOUNDS:
+                u = stats["univariate"][name]
+                print(f"    {name:<10} {u['pearson']:+.3f} / "
+                      f"{u['spearman']:+.3f}", flush=True)
+            print(f"  task eta^2 = {stats['task_eta2']:.3f}", flush=True)
+            print(f"  OLS all-confounds R^2 = {stats['ols']['r2']:.3f} "
+                  f"(adj {stats['ols']['adj_r2']:.3f})", flush=True)
+            print(f"  partial R^2:", flush=True)
+            for name, v in stats["partial_r2"].items():
+                if name != "intercept":
+                    print(f"    {name:<10} {v:+.4f}", flush=True)
+            rel = stats["reliability"]
+            print(f"  reliability (r_SB / ICC):", flush=True)
+            for key in ("raw_even_odd", "raw_first_second",
+                        "residual_even_odd", "residual_first_second"):
+                r = rel[key]
+                print(f"    {key:<22} {r['r_spearman_brown']:+.3f} / "
+                      f"{r['icc']:+.3f}", flush=True)
+            v = stats["verdict"]
+            print(f"  VERDICT: mostly_confound={v['mostly_confound']}  "
+                  f"reliable_residual={v['reliable_residual']}", flush=True)
 
-        out_png = os.path.join(args.out_dir,
-                               f"layer_{layer_idx:02d}_confound_audit.png")
-        plot_layer(layer_idx, tab, stats, resid, out_png)
-        print(f"  wrote {out_png}", flush=True)
+            out_png = os.path.join(
+                args.out_dir,
+                f"layer_{layer_idx:02d}_confound_audit_{mode}.png")
+            plot_layer(layer_idx, tab, stats, resid, out_png, mode=mode)
+            print(f"  wrote {out_png}", flush=True)
 
-        out_npz = os.path.join(args.out_dir,
-                               f"layer_{layer_idx:02d}_confound_audit.npz")
-        np.savez_compressed(
-            out_npz,
-            episode=tab["episode"].astype(np.int32),
-            task=tab["task"].astype(np.int32),
-            score=tab["score"].astype(np.float32),
-            score_residual=resid.astype(np.float32),
-            half_even=tab["half_even"].astype(np.float32),
-            half_odd=tab["half_odd"].astype(np.float32),
-            half_first=tab["half_first"].astype(np.float32),
-            half_second=tab["half_second"].astype(np.float32),
-            T_full=tab["T_full"].astype(np.int32),
-            mean_mass=tab["mean_mass"].astype(np.float32),
-            mean_l0=tab["mean_l0"].astype(np.float32),
-            home_frac=tab["home_frac"].astype(np.float32),
-        )
-        print(f"  wrote {out_npz}", flush=True)
+            out_npz = os.path.join(
+                args.out_dir,
+                f"layer_{layer_idx:02d}_confound_audit_{mode}.npz")
+            np.savez_compressed(
+                out_npz,
+                episode=tab["episode"].astype(np.int32),
+                task=tab["task"].astype(np.int32),
+                score=tab["score"].astype(np.float32),
+                score_residual=resid.astype(np.float32),
+                half_even=tab["half_even"].astype(np.float32),
+                half_odd=tab["half_odd"].astype(np.float32),
+                half_first=tab["half_first"].astype(np.float32),
+                half_second=tab["half_second"].astype(np.float32),
+                T_full=tab["T_full"].astype(np.int32),
+                mean_mass=tab["mean_mass"].astype(np.float32),
+                mean_l0=tab["mean_l0"].astype(np.float32),
+                home_frac=tab["home_frac"].astype(np.float32),
+            )
+            print(f"  wrote {out_npz}", flush=True)
+            layer_stats[mode] = stats
 
-        summary["layers"][f"layer_{layer_idx:02d}"] = stats
+        summary["layers"][f"layer_{layer_idx:02d}"] = layer_stats
 
     out_summary = os.path.join(args.out_dir, "confound_audit_summary.json")
     with open(out_summary, "w") as f:

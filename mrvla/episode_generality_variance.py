@@ -94,6 +94,33 @@ def per_timestep_ratios(z: np.ndarray, is_general: np.ndarray, prob_general: np.
     return ratio_hard, ratio_soft, total_mass, general_mass_hard, general_mass_soft
 
 
+def per_timestep_count_ratios(
+    z: np.ndarray, is_general: np.ndarray, prob_general: np.ndarray
+):
+    """Mass-robust per-timestep ratios: feature IDENTITY only, no magnitudes.
+
+    count_hard_t = (# active general features) / (# active features)
+    count_soft_t = mean prob_general over the active features
+
+    The mass-weighted ratios (per_timestep_ratios) are mechanically coupled
+    to total activation mass: their numerator is dominated by the near-
+    constant always-on high-P features, so the ratio behaves like
+    const/total_mass.  Counting active features instead of weighting by z
+    removes that coupling at the source — with a TopK SAE the denominator is
+    the constant K, so total mass cannot enter at all.
+
+    Frames with no active features score 0.
+    """
+    active = z > 0                                          # [N, F]
+    n_active = active.sum(axis=1)                           # [N]
+    denom = np.maximum(n_active, 1).astype(np.float64)
+    count_hard = (active & is_general[None, :]).sum(axis=1) / denom
+    count_soft = (active * prob_general[None, :]).sum(axis=1) / denom
+    count_hard = np.where(n_active > 0, count_hard, 0.0)
+    count_soft = np.where(n_active > 0, count_soft, 0.0)
+    return count_hard, count_soft
+
+
 def per_episode_mean(ratio_t: np.ndarray, episode: np.ndarray):
     """mean(ratio_t) within each episode. Returns (episode_ids [E], scores [E])."""
     ep_ids = np.unique(episode)
