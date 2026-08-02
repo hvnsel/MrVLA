@@ -1,39 +1,81 @@
-"""Apply the paper's logistic-regression generality classifier to SAE features.
+"""Faithful implementation of the generality metrics + classifier of
 
-Formula (arXiv 2603.19183, Appendix B):
-    P(general | m) = sigmoid(β₀ + β₁*ō + β₂*c + β₃*ā + β₄*ℓ̄ᵣ)
+    Swann, McGranahan, Buurmeijer, Kennedy, Schwager,
+    "Sparse Autoencoders Reveal Interpretable and Steerable Features in
+    VLA Models", arXiv:2603.19183 (Stanford, 2026), Sections 3.2-3.3.
 
-    β₀ = -4.20   (intercept)
-    β₁ =  1.89   (mean onset count, ō)
-    β₂ =  1.80   (episode coverage, c)
-    β₃ =  0.52   (mean activation magnitude when firing, ā)
-    β₄ = -0.36   (relative run length, ℓ̄ᵣ = mean_run_length / mean_episode_length)
+Every definition below is transcribed from the paper's equations rather than
+reconstructed from prose.  Equation numbers refer to the paper.
 
-    Threshold: P >= 0.5 → "general", else "memorized"
+Notation.  f_j(x_t^(e)) is the activation coefficient of SAE feature j at
+timestep t of episode e; T^(e) is the length of episode e; E is the set of all
+episodes; and
 
-All four metrics are recomputed from the sparse codes z stored in the
-layer_NN.npz files produced by extract_codes_and_metrics.py, using a single
-debounced firing state (two-threshold hysteresis: ON when z > tau_on, OFF when
-z < tau_off).  Coverage, ō, ℓ̄ᵣ, and ā are all conditioned on that same state,
-so the classifier inputs share one consistent definition of "fires":
+    E+_j = { e : exists t with f_j(x_t^(e)) > 0 }                        (p.5)
 
-  * onsets are counted on the debounced state — boundary flicker around
-    tau_on no longer inflates ō or fragments runs
-  * run length is episode-weighted and normalised per episode
-    (ℓ̄ᵣ = mean over fired episodes of run_length_ep / T_ep)
-  * ā is the mean of z over state-ON timesteps (not z > 0, not a
-    re-thresholded sum)
+is the set of episodes in which feature j fires at least once.  NOTE that E+
+is defined by f > 0, NOT by f > tau_on: coverage counts any nonzero
+activation, while the onset state machine uses the threshold.  All four
+metrics average over E+_j only.
+
+    Episode coverage            c_j       = |E+_j| / |E|                  (4)
+
+    Onset state machine         s_t = 1            if f_j(x_t) > tau_on
+                                s_t = 0            if f_j(x_t) == 0       (5)
+                                s_t = s_{t-1}      otherwise
+                                s_0 = 0,  tau_on = 0.1
+
+      The OFF trigger is EXACT ZERO, not a second threshold.  With a TopK SAE
+      a feature is zero exactly when it drops out of the top-K, so the state
+      is sticky: once on, it stays on through any nonzero dip.
+
+    Per-episode onset count     o_j       = sum_t max(0, s_t - s_{t-1})    (6)
+    Mean onset count            obar_j    = mean over E+_j of o_j          (7)
+
+    Mean activation magnitude   abar_j    = mean over E+_j of
+                                            max_t f_j(x_t^(e))            (8)
+
+      This is the mean of per-episode PEAKS, not the mean of activations over
+      active timesteps.
+
+    Per-episode run length      r_j       = (1/o_j) sum_t s_t             (9)
+    Relative run length         lbar_r,j  = mean over E+_j of
+                                            r_j^(e) / T^(e)              (10)
+
+    Classifier                  P(general | m) =
+        sigma( b0 + b1*obar + b2*c + b3*abar + b4*lbar_r )               (11)
+
+Fitted coefficients (paper Section 4.2).  One classifier per fine-tuning
+dataset; the OpenVLA classifier reuses the LIBERO boundary because OpenVLA is
+also fine-tuned on LIBERO.  Metrics are used UNNORMALISED so that a single
+boundary applies across layers of the same model.
+
+    LIBERO  b = (-4.20, 1.89, 1.80,  0.52, -0.36)   100%  LOO-CV on 30 labels
+    DROID   b = (-1.78, 0.74, 2.36,  0.35, -1.04)   96.7% LOO-CV
+
+The paper's fit used 30 hand-labelled features (15 general, 15 memorized) from
+a single reference layer.
+
+Reference values for validation (paper Table 2), OpenVLA / LIBERO-Goal:
+
+    Layer 8                 1775 active features,  8 general  (99.55% memorized)
+    LM avg (0,8,16,24,31)   9389 active features, 42 general  (99.55% memorized)
+
+Note the denominator is the number of ACTIVE features (those firing at least
+once), not the full dictionary width.  This module reports both.
 
 Usage
 -----
-python generality_classifier.py \\
-    --codes-dir E:/libero_goal_demos/codes \\
-    --out-dir   E:/libero_goal_demos/generality
+python mrvla/generality_classifier.py \
+    --codes-dir E:/libero_goal_demos/codes_v4 \
+    --out-dir   E:/libero_goal_demos/generality_v4 \
+    --dataset   libero
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 
@@ -41,18 +83,31 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Classifier constants from the paper (fit on 30 hand-labeled features)
+# Paper constants (Section 4.2)
 # ---------------------------------------------------------------------------
-BETA = dict(
+BETA_LIBERO = dict(
     intercept=-4.20,
     mean_onsets=1.89,
     coverage=1.80,
     mean_act_magnitude=0.52,
     rel_run_length=-0.36,
 )
-THRESHOLD = 0.5
-TAU_ON = 0.1    # paper's activation threshold: OFF -> ON when z > TAU_ON
-TAU_OFF = 0.05  # hysteresis release threshold: ON -> OFF when z < TAU_OFF
+BETA_DROID = dict(
+    intercept=-1.78,
+    mean_onsets=0.74,
+    coverage=2.36,
+    mean_act_magnitude=0.35,
+    rel_run_length=-1.04,
+)
+BETAS = {"libero": BETA_LIBERO, "droid": BETA_DROID}
+
+TAU_ON = 0.1        # paper Eq. (5)
+THRESHOLD = 0.5     # P(general) >= 0.5 -> general
+
+# Paper Table 2, OpenVLA / LIBERO-Goal: (n_active, n_general)
+PAPER_REFERENCE = {
+    "layer_08": (1775, 8),
+}
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -60,318 +115,288 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Derived metric helpers
+# Eq. (5): onset state machine
 # ---------------------------------------------------------------------------
-def hysteresis_state(
-    z_ep: np.ndarray, tau_on: float = TAU_ON, tau_off: float = TAU_OFF
-) -> np.ndarray:
-    """Two-threshold (Schmitt-trigger) firing state for one episode.
+def onset_state(z_ep: np.ndarray, tau_on: float = TAU_ON) -> np.ndarray:
+    """Binary firing state for one episode, per paper Eq. (5).
 
-    z_ep : [T, F] activations, ordered by timestep within a single episode.
+    z_ep : [T, F] activation coefficients for a single episode, ordered by
+           timestep.  Must be non-negative (TopK + ReLU).
 
-    State machine per feature:
-        OFF -> ON   when z > tau_on
-        ON  -> OFF  when z < tau_off
-        tau_off <= z <= tau_on : hold previous state (dead zone)
-    Initial state is OFF.  With tau_off == tau_on this degenerates to the old
-    single-threshold behaviour; tau_off < tau_on debounces boundary flicker so
-    a feature hovering around tau_on no longer produces a fresh onset on every
-    re-crossing.
+    Transitions, per feature independently:
+        s_t = 1        if z > tau_on      (ON trigger)
+        s_t = 0        if z == 0          (OFF trigger -- exact zero)
+        s_t = s_{t-1}  otherwise          (hold)
+    with s_0 = 0.
+
+    Implementation: the state at t is decided by the most recent TRIGGERING
+    timestep u <= t; if that trigger was an ON trigger the state is 1, if it
+    was an OFF trigger the state is 0, and before any trigger the state is 0.
 
     Returns [T, F] bool.
     """
-    if tau_off > tau_on:
-        raise ValueError(f"tau_off ({tau_off}) must be <= tau_on ({tau_on})")
-    T = z_ep.shape[0]
-    on_trig = z_ep > tau_on            # [T, F] forces state ON
-    off_trig = z_ep < tau_off          # [T, F] forces state OFF
-    trig = on_trig | off_trig
-    # Forward-fill the most recent trigger: state[t] = on_trig at the last
-    # triggering timestep <= t; OFF (-1 sentinel) before any trigger.
-    idx = np.where(trig, np.arange(T)[:, None], -1)      # [T, F]
-    idx = np.maximum.accumulate(idx, axis=0)             # last trigger index
-    cols = np.arange(z_ep.shape[1])[None, :]
-    state = np.where(idx >= 0, on_trig[np.maximum(idx, 0), cols], False)
-    return state
+    z_ep = np.asarray(z_ep)
+    if (z_ep < 0).any():
+        raise ValueError("activations must be non-negative")
+    T, F = z_ep.shape
+    on = z_ep > tau_on          # ON trigger
+    off = z_ep <= 0.0           # OFF trigger (exact zero)
+    trig = on | off
+    idx = np.where(trig, np.arange(T)[:, None], -1)
+    idx = np.maximum.accumulate(idx, axis=0)      # last triggering index
+    cols = np.arange(F)[None, :]
+    return np.where(idx >= 0, on[np.maximum(idx, 0), cols], False)
 
 
-def compute_metrics_hysteresis(
+# ---------------------------------------------------------------------------
+# Eqs. (4), (6)-(10): per-feature metrics
+# ---------------------------------------------------------------------------
+def compute_metrics(
     z: np.ndarray,
     episode: np.ndarray,
     timestep: np.ndarray,
     tau_on: float = TAU_ON,
-    tau_off: float = TAU_OFF,
 ) -> dict:
-    """Compute all four classifier inputs from ONE debounced firing state.
+    """Compute the four classifier inputs exactly as defined in the paper.
 
-    Every metric is derived from the same hysteresis state so their
-    definitions cannot drift apart:
+    z        : [N, F] activation coefficients (non-negative)
+    episode  : [N]    episode id per row
+    timestep : [N]    timestep within episode per row
 
-      coverage        : fraction of episodes with >= 1 onset of the state
-      mean_onsets     : mean # of state onsets per episode, over episodes
-                        where the feature fired at all
-      mean_run_length : per-episode run length (active steps / onsets within
-                        the episode), averaged over fired episodes —
-                        episode-weighted, so flicker-heavy episodes no longer
-                        dominate via their burst count
-      rel_run_length  : per-episode run length normalised by THAT episode's
-                        length, averaged over fired episodes
-      mean_act_mag    : mean of z over timesteps where the state is ON
-                        (includes dead-zone values sustained by hysteresis),
-                        i.e. conditioned on the same firing definition as
-                        every other metric
+    Returns a dict with, per feature [F]:
+        coverage        c        Eq. (4)   -- over episodes with any f > 0
+        mean_onsets     obar     Eq. (7)
+        mean_act_mag    abar     Eq. (8)   -- mean of per-episode PEAKS
+        rel_run_length  lbar_r   Eq. (10)
+        mean_run_length          Eq. (9) averaged over E+ (not a classifier
+                                 input; reported for diagnostics)
+    plus dataset-level diagnostics:
+        n_episodes, ep_mean_len, is_active, n_active,
+        n_active_no_onset  -- per feature, the count of episodes where the
+                              feature is nonzero but never exceeds tau_on.
+                              The paper asserts obar >= 1 for any feature with
+                              c > 0; that holds only if this count is 0, so we
+                              measure it rather than assume it.
     """
-    z = z.astype(np.float32, copy=False)
+    z = np.asarray(z, dtype=np.float32)
     F = z.shape[1]
-    unique_eps, ep_counts = np.unique(episode, return_counts=True)
-    n_eps = len(unique_eps)
+    ep_ids = np.unique(episode)
+    E = len(ep_ids)
 
-    onsets_ef = np.zeros((n_eps, F), dtype=np.int32)
-    active_steps_ef = np.zeros((n_eps, F), dtype=np.int32)
-    run_len_ef = np.zeros((n_eps, F), dtype=np.float64)   # per-ep mean run length
-    rel_run_ef = np.zeros((n_eps, F), dtype=np.float64)   # ... / T_ep
-    act_sum_f = np.zeros(F, dtype=np.float64)             # Σ z over ON steps
-    act_cnt_f = np.zeros(F, dtype=np.int64)               # # ON steps
+    n_eps_active = np.zeros(F, dtype=np.int64)
+    n_active_no_onset = np.zeros(F, dtype=np.int64)
+    sum_onsets = np.zeros(F, dtype=np.float64)
+    sum_peak = np.zeros(F, dtype=np.float64)
+    sum_run = np.zeros(F, dtype=np.float64)
+    sum_rel = np.zeros(F, dtype=np.float64)
+    ep_lengths = np.zeros(E, dtype=np.int64)
 
-    for e_idx, ep_id in enumerate(unique_eps):
-        mask = (episode == ep_id)
-        order = np.argsort(timestep[mask])
-        z_ep = z[mask][order]                             # [T, F]
-        T_ep = z_ep.shape[0]
+    for e_i, ep in enumerate(ep_ids):
+        mask = episode == ep
+        order = np.argsort(timestep[mask], kind="stable")
+        z_ep = z[mask][order]                       # [T, F]
+        T = z_ep.shape[0]
+        ep_lengths[e_i] = T
 
-        state = hysteresis_state(z_ep, tau_on, tau_off)   # [T, F]
+        # E+ membership: any nonzero activation in this episode (paper p.5)
+        peak = z_ep.max(axis=0)                     # [F]
+        in_Eplus = peak > 0.0
 
-        # Pad with OFF rows so onsets at t=0 count as complete bursts.
-        padded = np.vstack([
-            np.zeros((1, F), dtype=bool),
-            state,
-            np.zeros((1, F), dtype=bool),
-        ])
-        diff = padded[1:].astype(np.int8) - padded[:-1].astype(np.int8)
-        onsets = (diff == 1).sum(axis=0)                  # [F]
-        active_steps = state.sum(axis=0)                  # [F]
+        s = onset_state(z_ep, tau_on)               # [T, F]
+        s_prev = np.vstack([np.zeros((1, F), dtype=bool), s[:-1]])
+        onsets = (s & ~s_prev).sum(axis=0).astype(np.float64)   # Eq. (6)
+        n_on = s.sum(axis=0).astype(np.float64)
 
-        onsets_ef[e_idx] = onsets
-        active_steps_ef[e_idx] = active_steps
-        with np.errstate(invalid="ignore"):
-            rl = np.where(onsets > 0, active_steps / np.maximum(onsets, 1), 0.0)
-        run_len_ef[e_idx] = rl
-        rel_run_ef[e_idx] = rl / max(T_ep, 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            run = np.where(onsets > 0, n_on / np.maximum(onsets, 1e-12), 0.0)  # Eq. (9)
 
-        # ā accumulators: magnitude over ON steps (same state as above)
-        act_sum_f += np.where(state, z_ep, 0.0).sum(axis=0)
-        act_cnt_f += active_steps
+        n_eps_active += in_Eplus
+        n_active_no_onset += in_Eplus & (onsets == 0)
+        sum_onsets += np.where(in_Eplus, onsets, 0.0)
+        sum_peak += np.where(in_Eplus, peak, 0.0)
+        sum_run += np.where(in_Eplus, run, 0.0)
+        sum_rel += np.where(in_Eplus, run / T, 0.0)             # Eq. (10)
 
-    fired_in_ep = onsets_ef > 0
-    n_fired = fired_in_ep.sum(axis=0)                     # [F]
-
-    coverage = n_fired / n_eps
-    mean_onsets = np.where(
-        n_fired > 0,
-        (onsets_ef * fired_in_ep).sum(axis=0) / np.maximum(n_fired, 1),
-        0.0,
-    )
-    # Episode-weighted mean run length (each fired episode counts once).
-    mean_run_length = np.where(
-        n_fired > 0,
-        (run_len_ef * fired_in_ep).sum(axis=0) / np.maximum(n_fired, 1),
-        0.0,
-    )
-    # Per-episode-normalised relative run length: each episode's run length is
-    # divided by that episode's own length before averaging, instead of
-    # dividing a burst-weighted global run length by the global mean length.
-    rel_run_length = np.where(
-        n_fired > 0,
-        (rel_run_ef * fired_in_ep).sum(axis=0) / np.maximum(n_fired, 1),
-        0.0,
-    )
-    mean_act_mag = np.where(
-        act_cnt_f > 0, act_sum_f / np.maximum(act_cnt_f, 1), 0.0
-    )
-    ep_mean_len = float(ep_counts.mean())
-
+    denom = np.maximum(n_eps_active, 1).astype(np.float64)
     return {
-        "coverage": coverage.astype(np.float32),
-        "mean_onsets": mean_onsets.astype(np.float32),
-        "mean_run_length": mean_run_length.astype(np.float32),
-        "rel_run_length": rel_run_length.astype(np.float32),
-        "mean_act_mag": mean_act_mag.astype(np.float32),
-        "ep_mean_len": ep_mean_len,
+        "coverage": (n_eps_active / E).astype(np.float32),           # Eq. (4)
+        "mean_onsets": (sum_onsets / denom).astype(np.float32),      # Eq. (7)
+        "mean_act_mag": (sum_peak / denom).astype(np.float32),       # Eq. (8)
+        "rel_run_length": (sum_rel / denom).astype(np.float32),      # Eq. (10)
+        "mean_run_length": (sum_run / denom).astype(np.float32),     # Eq. (9)
+        "is_active": n_eps_active > 0,
+        "n_active": int((n_eps_active > 0).sum()),
+        "n_active_no_onset": n_active_no_onset,
+        "n_episodes": E,
+        "ep_mean_len": float(ep_lengths.mean()),
         "tau_on": float(tau_on),
-        "tau_off": float(tau_off),
     }
 
 
-def mean_episode_length(episode: np.ndarray) -> float:
-    """Average number of timesteps per episode."""
-    _, counts = np.unique(episode, return_counts=True)
-    return float(counts.mean())
-
-
 # ---------------------------------------------------------------------------
-# Classifier
+# Eq. (11): classifier
 # ---------------------------------------------------------------------------
 def classify_features(
     coverage: np.ndarray,
     mean_onsets: np.ndarray,
-    rel_run_length: np.ndarray,
     mean_act_mag: np.ndarray,
-    ep_mean_len: float,
+    rel_run_length: np.ndarray,
+    beta: dict | None = None,
+    is_active: np.ndarray | None = None,
     verbose: bool = True,
 ) -> dict:
-    """Return per-feature P(general) and binary label using paper's β values.
+    """Apply Eq. (11).  Metrics are used unnormalised, as in the paper.
 
-    ``rel_run_length`` is expected to already be per-episode normalised
-    (see compute_metrics_hysteresis) — it is used as-is, NOT re-derived from a
-    pooled run length divided by the global mean episode length.
+    ``is_active`` (features firing at least once) is used only for reporting:
+    the paper's Table 2 denominators are active-feature counts, so we report
+    the general fraction over active features as well as over the whole
+    dictionary.  Dead features have all-zero metrics and receive
+    P = sigma(beta_0), which is below threshold for both fitted models.
     """
+    beta = BETA_LIBERO if beta is None else beta
     logit = (
-        BETA["intercept"]
-        + BETA["mean_onsets"]     * mean_onsets
-        + BETA["coverage"]        * coverage
-        + BETA["mean_act_magnitude"] * mean_act_mag
-        + BETA["rel_run_length"]  * rel_run_length
+        beta["intercept"]
+        + beta["mean_onsets"] * mean_onsets
+        + beta["coverage"] * coverage
+        + beta["mean_act_magnitude"] * mean_act_mag
+        + beta["rel_run_length"] * rel_run_length
     )
-    prob_general = sigmoid(logit)
-    is_general = prob_general >= THRESHOLD
+    prob = sigmoid(logit)
+    is_general = prob >= THRESHOLD
 
-    n_features = len(coverage)
+    F = len(coverage)
+    if is_active is None:
+        is_active = np.ones(F, dtype=bool)
+    n_active = int(is_active.sum())
     n_general = int(is_general.sum())
-    n_memorized = n_features - n_general
-    frac_general = n_general / n_features
+    n_general_active = int((is_general & is_active).sum())
 
-    if verbose:
-        print(f"  features={n_features}  general={n_general} ({100*frac_general:.2f}%)  "
-              f"memorized={n_memorized} ({100*(1-frac_general):.2f}%)")
-        print(f"  paper target: ~0.45% general")
-        print(f"  metric summary:")
-        print(f"    coverage       mean={coverage.mean():.4f}  std={coverage.std():.4f}")
-        print(f"    mean_onsets    mean={mean_onsets.mean():.4f}  std={mean_onsets.std():.4f}")
-        print(f"    mean_act_mag   mean={mean_act_mag.mean():.4f}  std={mean_act_mag.std():.4f}")
-        print(f"    rel_run_length mean={rel_run_length.mean():.4f}  std={rel_run_length.std():.4f}")
-        print(f"    P(general)     mean={prob_general.mean():.4f}  "
-              f"median={np.median(prob_general):.4f}  max={prob_general.max():.4f}")
-        print(f"    mean episode length: {ep_mean_len:.1f} steps")
-
-    return {
-        "prob_general": prob_general.astype(np.float32),
+    out = {
+        "prob_general": prob.astype(np.float32),
         "is_general": is_general,
-        "n_features": n_features,
+        "n_features": F,
+        "n_active": n_active,
         "n_general": n_general,
-        "n_memorized": n_memorized,
-        "frac_general": float(frac_general),
-        "ep_mean_len": float(ep_mean_len),
-        "rel_run_length": rel_run_length.astype(np.float32),
-        "mean_act_mag": mean_act_mag.astype(np.float32),
+        "n_general_active": n_general_active,
+        "n_memorized_active": n_active - n_general_active,
+        "frac_general_active": n_general_active / max(n_active, 1),
+        "frac_memorized_active": 1.0 - n_general_active / max(n_active, 1),
     }
+    if verbose:
+        print(f"  features={F}  active={n_active}  "
+              f"general={n_general_active} "
+              f"({100*out['frac_general_active']:.2f}% of active)  "
+              f"memorized={out['n_memorized_active']} "
+              f"({100*out['frac_memorized_active']:.2f}%)")
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
+def main() -> None:
     p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--codes-dir", required=True,
-                   help="Directory produced by extract_codes_and_metrics.py")
-    p.add_argument("--out-dir", required=True,
-                   help="Where to write per-layer results + summary.json")
-    p.add_argument("--tau-on", type=float, default=TAU_ON,
-                   help="Firing threshold: OFF -> ON when z > tau_on.")
-    p.add_argument("--tau-off", type=float, default=TAU_OFF,
-                   help="Hysteresis release: ON -> OFF when z < tau_off "
-                        "(must be <= tau_on; equal reproduces single-threshold).")
+                   help="Directory of layer_NN.npz files from "
+                        "extract_codes_and_metrics.py")
+    p.add_argument("--out-dir", required=True)
+    p.add_argument("--dataset", default="libero", choices=("libero", "droid"),
+                   help="Which fitted classifier to apply (paper Sec. 4.2). "
+                        "OpenVLA fine-tuned on LIBERO uses the LIBERO boundary.")
+    p.add_argument("--tau-on", type=float, default=TAU_ON)
     args = p.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
+    beta = BETAS[args.dataset]
 
-    # Discover layers from npz files
-    import glob
     layer_files = sorted(glob.glob(os.path.join(args.codes_dir, "layer_*.npz")))
     if not layer_files:
-        raise FileNotFoundError(f"No layer_*.npz files in {args.codes_dir!r}")
-    print(f"[gen] found {len(layer_files)} layer files", flush=True)
-    print(f"[gen] β = {BETA}", flush=True)
+        raise FileNotFoundError(f"No layer_*.npz in {args.codes_dir!r}")
+    print(f"[gen] {len(layer_files)} layers | classifier={args.dataset} "
+          f"| beta={beta} | tau_on={args.tau_on}", flush=True)
 
-    summary = {"beta": BETA, "threshold": THRESHOLD,
-               "tau_on": args.tau_on, "tau_off": args.tau_off, "layers": {}}
+    summary = {"beta": beta, "dataset": args.dataset, "tau_on": args.tau_on,
+               "threshold": THRESHOLD, "reference": "arXiv:2603.19183 Sec 3.2-3.3",
+               "layers": {}}
 
     for fpath in layer_files:
         layer_name = os.path.basename(fpath).replace(".npz", "")
         print(f"\n[gen] ====== {layer_name} ======", flush=True)
-
         d = np.load(fpath)
-        episode        = d["episode"]
-        timestep       = d["timestep"]
-        z              = d["z"]   # [N, F] float16
+        z = d["z"].astype(np.float32)
+        episode, timestep = d["episode"], d["timestep"]
 
-        F = z.shape[1]
-        print(f"  recomputing metrics with tau_on={args.tau_on} "
-              f"tau_off={args.tau_off} (hysteresis) ...", flush=True)
-        m = compute_metrics_hysteresis(
-            z.astype(np.float32), episode, timestep,
-            tau_on=args.tau_on, tau_off=args.tau_off,
-        )
-        coverage = m["coverage"]
-        mean_onsets = m["mean_onsets"]
-        ep_mean_len = m["ep_mean_len"]
-
-        result = classify_features(
-            coverage=coverage,
-            mean_onsets=mean_onsets,
-            rel_run_length=m["rel_run_length"],
+        m = compute_metrics(z, episode, timestep, tau_on=args.tau_on)
+        res = classify_features(
+            coverage=m["coverage"],
+            mean_onsets=m["mean_onsets"],
             mean_act_mag=m["mean_act_mag"],
-            ep_mean_len=ep_mean_len,
+            rel_run_length=m["rel_run_length"],
+            beta=beta,
+            is_active=m["is_active"],
         )
 
-        # Save per-layer results
+        n_no_onset = int((m["n_active_no_onset"] > 0).sum())
+        print(f"  episodes={m['n_episodes']}  mean_len={m['ep_mean_len']:.1f}  "
+              f"features with >=1 nonzero-but-sub-threshold episode: "
+              f"{n_no_onset}", flush=True)
+
+        ref = PAPER_REFERENCE.get(layer_name)
+        if ref is not None:
+            print(f"  [paper Table 2] OpenVLA/LIBERO-Goal {layer_name}: "
+                  f"{ref[1]} general / {ref[0]} active "
+                  f"({100*ref[1]/ref[0]:.2f}%)  <-- reference", flush=True)
+
         out_path = os.path.join(args.out_dir, f"{layer_name}_generality.npz")
         np.savez_compressed(
             out_path,
-            prob_general=result["prob_general"],
-            is_general=result["is_general"].astype(np.uint8),
-            coverage=coverage,
-            mean_onsets=mean_onsets,
-            mean_act_mag=result["mean_act_mag"],
-            rel_run_length=result["rel_run_length"],
+            prob_general=res["prob_general"],
+            is_general=res["is_general"].astype(np.uint8),
+            is_active=m["is_active"].astype(np.uint8),
+            coverage=m["coverage"],
+            mean_onsets=m["mean_onsets"],
+            mean_act_mag=m["mean_act_mag"],
+            rel_run_length=m["rel_run_length"],
             mean_run_length=m["mean_run_length"],
+            n_active_no_onset=m["n_active_no_onset"],
             tau_on=np.float32(args.tau_on),
-            tau_off=np.float32(args.tau_off),
         )
         print(f"  saved {out_path}", flush=True)
 
-        # Top-10 most general features
-        top10_idx = np.argsort(result["prob_general"])[-10:][::-1]
-        print(f"  top-10 general features (by P(general)):", flush=True)
-        print(f"  {'feat':>6}  {'P(gen)':>7}  {'coverage':>9}  "
-              f"{'onsets':>7}  {'act_mag':>8}  {'rel_rl':>7}")
-        for fi in top10_idx:
-            print(f"  {fi:>6}  {result['prob_general'][fi]:>7.4f}  "
-                  f"{coverage[fi]:>9.4f}  {mean_onsets[fi]:>7.3f}  "
-                  f"{result['mean_act_mag'][fi]:>8.4f}  "
-                  f"{result['rel_run_length'][fi]:>7.4f}")
+        order = np.argsort(res["prob_general"])[-10:][::-1]
+        print(f"  {'feat':>6}  {'P(gen)':>7}  {'cover':>7}  {'onsets':>7}  "
+              f"{'peak_a':>7}  {'rel_rl':>7}")
+        for fi in order:
+            print(f"  {fi:>6}  {res['prob_general'][fi]:>7.4f}  "
+                  f"{m['coverage'][fi]:>7.4f}  {m['mean_onsets'][fi]:>7.3f}  "
+                  f"{m['mean_act_mag'][fi]:>7.4f}  "
+                  f"{m['rel_run_length'][fi]:>7.4f}", flush=True)
 
         summary["layers"][layer_name] = {
-            "n_features": result["n_features"],
-            "n_general": result["n_general"],
-            "n_memorized": result["n_memorized"],
-            "frac_general": result["frac_general"],
-            "ep_mean_len": result["ep_mean_len"],
-            "top10_general_features": top10_idx.tolist(),
+            "n_features": res["n_features"],
+            "n_active": res["n_active"],
+            "n_general_active": res["n_general_active"],
+            "frac_general_active": res["frac_general_active"],
+            "frac_memorized_active": res["frac_memorized_active"],
+            "n_episodes": m["n_episodes"],
+            "ep_mean_len": m["ep_mean_len"],
+            "top10_general": order.tolist(),
+            "paper_reference": ref,
         }
 
-    out_summary = os.path.join(args.out_dir, "summary.json")
-    with open(out_summary, "w") as f:
+    with open(os.path.join(args.out_dir, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
-    print(f"\n[gen] === FINAL SUMMARY ===", flush=True)
-    for layer_name, s in summary["layers"].items():
-        print(f"  {layer_name}: {s['n_general']}/{s['n_features']} general "
-              f"({100*s['frac_general']:.2f}%)")
-    print(f"  paper target: ~0.45%")
-    print(f"\n[gen] done. {out_summary}", flush=True)
+    print(f"\n[gen] === SUMMARY (general / active features) ===")
+    for name, s in summary["layers"].items():
+        line = (f"  {name}: {s['n_general_active']}/{s['n_active']} "
+                f"({100*s['frac_general_active']:.2f}% general, "
+                f"{100*s['frac_memorized_active']:.2f}% memorized)")
+        if s["paper_reference"]:
+            line += f"   [paper: {s['paper_reference'][1]}/{s['paper_reference'][0]}]"
+        print(line)
+    print(f"\n[gen] done -> {os.path.join(args.out_dir, 'summary.json')}", flush=True)
 
 
 if __name__ == "__main__":
