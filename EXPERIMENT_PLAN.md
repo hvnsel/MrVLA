@@ -82,9 +82,48 @@ F128 = 0.92, F445 = 0.58.
 | **0-B.** Prevalence in range, but top features are low-coverage / flickery | Classifier reproduces the *count* but not the *identity* → genuine transfer failure, and a real finding | Proceed, but this becomes a headline result; verify it is not an SAE-quality artifact in Phase 4 |
 | **0-C.** 0% general, or ≫2% | Our SAE differs materially from theirs (width, sparsity, activation scale) | **Do not proceed.** Reconcile SAE config first (§1.2) — most likely the dictionary-width mismatch |
 
-> **Note.** Our current SAE is `F = 2048`; the paper uses a 1× expansion ratio, so for
-> OpenVLA (`d = 4096`) their dictionary is `F = 4096` with `k = 100` and ~43% of features
-> alive. This is a known, material difference and is the first thing to check under 0-C.
+> **Note.** The paper uses a 1× expansion ratio, so for OpenVLA (`d = 4096`) their
+> dictionary is `F = 4096` with `k = 100` and ~43% of features alive (1775/4096 at L8).
+
+### 0.4 Phase-0 result on `codes_v3` (recorded 2026-08)
+
+Running the faithful classifier on the **old** `codes_v3` SAE (`F = 2048`, trained with a
+mistaken `expansion_ratio = 0.5`) gives **0 general at every layer** — outcome **0-C**.
+The diagnostics localise the cause precisely:
+
+- **Coverage is saturated:** every top-scoring feature has `c = 1.0`. Under the paper's
+  `f > 0` definition of E⁺ and a TopK SAE, a feature lands in the top-K at least once in
+  almost every episode purely by chance (`100/2048 ≈ 4.9%` active fraction over ~127
+  frames → P(appears) ≈ 0.998), so coverage cannot discriminate. The paper's general
+  features have `c ∈ [0.2, 0.9]`, which requires features that are *exactly zero* in
+  20–80% of episodes — i.e. genuinely episode-selective. Our `F = 2048` features are not
+  that selective.
+- **Onset counts collapse below 1:** ~1962/1964 features have at least one episode that is
+  nonzero but never crosses `τ_on = 0.1`. Those episodes are in E⁺ yet contribute zero
+  onsets, dragging `ō` below 1 — violating the paper's `ō ≥ 1` assertion, which holds only
+  when `f > 0 ⟺ f` crosses `τ_on` (an activation-spikiness assumption). With `ō < 1` the
+  `β₁ō` term is small and nothing reaches `P ≥ 0.5`.
+
+**Root cause:** the `F = 2048` dictionary (half the paper's OpenVLA width) yields
+insufficiently selective features — they appear weakly in nearly every episode rather than
+switching cleanly on/off. This is a *scale/selectivity* mismatch, not a property of the
+classifier. `train_sae.py` also had `expansion_ratio = 0.5` hard-coded as its default
+(now corrected to `1.0`); normalization was already faithful.
+
+**Do not read the classifier's transfer behaviour off this run.** Retrain at `F = 4096`
+and rerun Phase 0. **Acceptance checks for the rerun** (all four should improve if width
+was the cause):
+
+1. Coverage **de-saturates** — a spread over [0, 1], not a spike at 1.0.
+2. The nonzero-but-sub-threshold feature count **drops toward 0**.
+3. Some features show `ō ≈ 2–4` (bursty, multiple onsets) — the signature of the paper's
+   real general features (F1129 etc.).
+4. Layer 8 yields **≈ 8 general (0.45%)**, matching Table 2.
+
+If checks 1–3 improve but general **stays near 0**, that is a genuine transfer-failure
+finding (the classifier does not port to our faithful SAE) rather than a scaling artifact,
+and it becomes reportable. If it reproduces ~8, the method transfers and Phases 1–2
+proceed.
 
 ---
 

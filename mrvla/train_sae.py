@@ -4,9 +4,13 @@ Implements the TopK + AuxK architecture and hyperparameters from:
   "Sparse Autoencoders Reveal Interpretable and Steerable Features in VLA Models"
   (arXiv 2603.19183), Appendix B.1, Table 6.
 
-One SAE is trained per layer. For OpenVLA (d=4096) the paper uses expansion
-ratio 0.5, giving a dictionary of 2048 features — the same size as the pi0.5
-PaliGemma SAEs — to keep comparisons meaningful at robotics dataset scales.
+One SAE is trained per layer. The paper (Sec 3.1) uses a 1x expansion ratio
+for every SAE: "the latent space has the same dimensionality as the input."
+For OpenVLA (d=4096) that is F=4096 features, and Table 2 confirms it -- 1775
+ACTIVE features at Layer 8 is ~43% of 4096, the alive fraction expected of a
+1x TopK SAE. (An earlier version of this file defaulted to ER=0.5 -> F=2048,
+which is NOT the paper's OpenVLA config and produced a differently-scaled,
+less selective dictionary; see the Phase-0 note in EXPERIMENT_PLAN.md.)
 
 Usage
 -----
@@ -58,7 +62,7 @@ from torch.utils.data import DataLoader, TensorDataset
 # Hyperparameters (Table 6 + OpenVLA-specific notes from Appendix B.1)
 # ---------------------------------------------------------------------------
 DEFAULTS = dict(
-    expansion_ratio=0.5,   # OpenVLA: ER=0.5 → 2048 features for d=4096
+    expansion_ratio=1.0,   # paper Sec 3.1: 1x -> F=d (4096 for OpenVLA)
     k=100,                 # active features per forward pass
     k_aux=512,             # AuxK: top-k dead latents for auxiliary loss
     aux_coeff=1 / 32,      # α in Eq. 5
