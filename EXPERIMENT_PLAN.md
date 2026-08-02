@@ -80,11 +80,60 @@ F128 = 0.92, F445 = 0.58.
 |---|---|---|
 | **0-A.** ~0.2–1% general; top features are high-coverage and bursty | Implementation validated; classifier transfers to our SAE | Proceed to Phase 1 |
 | **0-B.** Prevalence in range, but top features are low-coverage / flickery | Classifier reproduces the *count* but not the *identity* → genuine transfer failure, and a real finding | Proceed, but this becomes a headline result; verify it is not an SAE-quality artifact in Phase 4 |
-| **0-C.** 0% general, or ≫2% | Our SAE differs materially from theirs (width, sparsity, activation scale) | **Do not proceed.** Reconcile SAE config first (§1.2) — most likely the dictionary-width mismatch |
+| **0-C.** 0% general, or ≫2% | Our SAE differs materially from theirs (training recipe, selectivity, activation scale) | **Do not proceed.** Reconcile SAE training first (§1.2) |
 
-> **Note.** Our current SAE is `F = 2048`; the paper uses a 1× expansion ratio, so for
-> OpenVLA (`d = 4096`) their dictionary is `F = 4096` with `k = 100` and ~43% of features
-> alive. This is a known, material difference and is the first thing to check under 0-C.
+> **Note.** The paper's OpenVLA SAEs use `ER = 0.5` → `F = 2048`, `k = 100` (p.20,
+> "to match the dictionary size of 2048 features for our π0.5 models"). Table 2's 1775
+> active at L8 is ~87% of 2048, the high alive fraction expected of a compact ER=0.5 SAE.
+> So `F = 2048` is the *faithful* OpenVLA width, not a mismatch.
+
+### 0.4 Phase-0 result on `codes_v3` (recorded 2026-08)
+
+Running the faithful classifier on the **old** `codes_v3` SAE gives **0 general at every
+layer** — outcome **0-C**. An initial diagnosis blamed the dictionary width; that was
+**wrong**. The paper trains OpenVLA at `ER = 0.5` → `F = 2048` (p.20), exactly our width,
+and the activation collection is also faithful (prefill activation, mean-pooled over
+tokens, `hooks.py`). The remaining deviation is the **training recipe**: the `codes_v3`
+SAEs were trained for **>500 epochs on some layers**, versus the paper's **100** (Table 4).
+
+The diagnostics show the symptom clearly, and it is consistent with a training-quality
+(feature-selectivity) problem rather than a width one:
+
+- **Coverage saturated at 1.0** for the top features, and **~1962/1964 features have
+  nonzero-but-sub-threshold episodes**. Both mean the features are *not selective*: they
+  appear weakly in the top-K across nearly every episode instead of being exactly zero
+  when irrelevant. A selective feature (the paper's regime) is absent — literally 0, not
+  in the top-K — in the episodes lacking its triggering event.
+- Because leaked sub-threshold episodes sit in E⁺ with zero onsets, they drag `ō` below 1
+  even for genuinely bursty features (e.g. L8 feat 1793: bursty, `rel_rl = 0.17`, yet
+  `ō = 0.77`). No feature reaches the `ō ≈ 2–4` that characterises the paper's general
+  features, so the `β₁ō` term is starved and nothing clears `P ≥ 0.5`.
+
+**Root cause (revised):** a training-recipe deviation (epochs, and possibly others) yields
+non-selective / leaky features. This is not a property of the classifier and not a width
+issue. `train_sae.py` already defaults to the faithful `ER = 0.5` and 100 epochs;
+normalization and collection were already faithful.
+
+**Do not read the classifier's transfer behaviour off this run.** Retrain with the exact
+Table 4 recipe (`ER = 0.5`, `k = 100`, `k_aux = 512`, aux `1/32`, lr `1e-4`,
+Adam(0.9, 0.999), batch 4096, **100 epochs**) and rerun Phase 0. **Acceptance checks for
+the rerun** (all four should improve if the training deviation was the cause):
+
+1. Feature **selectivity returns** — most features become exactly zero in most episodes,
+   so the coverage distribution spreads (most features low-coverage/memorized, a few high)
+   and the nonzero-but-sub-threshold count **drops toward 0**.
+2. Some features show `ō ≈ 2–4` (bursty, multiple onsets) — the signature of the paper's
+   real general features (F1129 fires 2× for single-object, 4× for two-object tasks).
+3. Layer 8 yields **≈ 8 general (0.45%)**, matching Table 2, and those features are bursty
+   with high coverage (not the sustained `ō = 1` features).
+4. A **seed check**: the paper's own multi-seed ablation (Sec A.3, 7 seeds) finds the top
+   features recur across seeds. Reproduce this — if our features do *not* recur across
+   seeds, that is a separate finding (feeds Phase 4.1).
+
+If checks 1–2 improve but general **stays near 0**, that is a genuine transfer-failure
+finding (the classifier does not port to our faithful SAE) rather than a training artifact,
+and it becomes reportable. If it reproduces ~8, the method transfers and Phases 1–2
+proceed.
 
 ---
 
@@ -96,11 +145,12 @@ Collecting across all four suites is what makes Phases 3–5 possible (cross-sui
 needs held-out suites; cross-model universality needs per-suite fine-tunes).
 
 ### 1.2 SAE configuration — **decision required**
-Match the paper (`F = d = 4096`, `k = 100`, 1× expansion, per-sample normalisation,
-AuxK loss, unit-norm decoder) **or** deliberately differ and treat it as a variable.
-Matching makes Table 2 a direct reference point; differing makes every comparison
-approximate. Recommendation: **match**, and if desired add our 2048 config as a
-secondary arm to measure width sensitivity.
+Match the paper's OpenVLA config exactly (Table 4 + p.20): `ER = 0.5` → `F = 2048`,
+`k = 100`, `k_aux = 512`, aux `1/32`, lr `1e-4`, Adam(0.9, 0.999), batch 4096,
+**100 epochs**, per-sample normalisation (geometric-median pre-bias, mean subtraction,
+L2), unit-norm decoder, AuxK loss. The `codes_v3` run departed on epochs (>500 on some
+layers); that is the known deviation to eliminate. `train_sae.py` now defaults to this
+recipe.
 
 ### 1.3 Seeds
 **≥ 2 SAE seeds per (model, layer)** — mandatory, not optional. This is the noise floor
