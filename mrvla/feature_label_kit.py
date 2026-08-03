@@ -164,22 +164,29 @@ class FrameSource:
 # ---------------------------------------------------------------------------
 def select_features(prob: np.ndarray, is_active: np.ndarray, n: int,
                     strategy: str = "stratified", seed: int = 0,
-                    n_bins: int = 10) -> np.ndarray:
+                    n_bins: int = 10, top_frac: float = 0.4) -> np.ndarray:
     """Choose which features to label.
 
     Uniform random sampling is useless here: with ~99.5% of features
     memorized, 60 random draws yield almost no positives, and the paper's
-    balanced 15-general/15-memorized set cannot arise by chance.
+    balanced 15-general/15-memorized set was CURATED (they searched for
+    general candidates), not sampled.  We mirror that in two parts:
 
-    ``stratified`` bins features by P(general) VALUE (equal-width) and draws
-    evenly from every non-empty bin.  Value bins rather than rank bins are
-    essential: under a distribution where 99.5% of features sit near zero,
-    rank binning still allots only ~n/n_bins draws to the sparse
-    high-probability tail, whereas value binning gives that tail its own bins
-    and therefore heavy representation.
+      1. Reserve ``top_frac`` of the budget for the highest-P features -- the
+         general CANDIDATES to adjudicate.  Many will still be memorized
+         (borderline negatives near the boundary), which is exactly what
+         sharpens the fitted decision surface; the true generals, if any
+         exist in this layer, are guaranteed to be shown rather than left to
+         a bin lottery.
+      2. Fill the rest by binning the remaining features by P(general) VALUE
+         (equal-width) and drawing from every bin, so clear memorized
+         negatives across the whole score range are represented.  Value bins
+         rather than rank bins matter: with 99.5% of mass near zero, rank
+         binning starves the tail.
 
-    NOTE P is used only to SPREAD the sample across the score range.  It
-    supplies no labels, and the annotator never sees it.
+    NOTE P is used only to PRIORITISE and SPREAD the sample.  It supplies no
+    labels, and the annotator never sees it -- the reserved top features are
+    candidates to be judged, not pre-labelled positives.
     """
     rng = np.random.default_rng(seed)
     idx = np.flatnonzero(is_active)
@@ -190,29 +197,45 @@ def select_features(prob: np.ndarray, is_active: np.ndarray, n: int,
     if strategy != "stratified":
         raise ValueError(f"unknown strategy {strategy!r}")
 
-    p = prob[idx]
-    lo, hi = float(p.min()), float(p.max())
-    if hi <= lo:
-        return np.sort(rng.choice(idx, size=n, replace=False))
+    p_all = prob[idx]
+    order_desc = idx[np.argsort(p_all)[::-1]]
 
-    edges = np.linspace(lo, hi, n_bins + 1)
-    bin_id = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
-    groups = [idx[bin_id == b] for b in range(n_bins)]
-    groups = [g for g in groups if len(g)]
+    # 1. reserve the top-P candidates
+    n_top = int(np.floor(np.clip(top_frac, 0.0, 1.0) * n))
+    top = order_desc[:n_top]
 
-    per = max(1, n // len(groups))
-    picked = np.unique(np.concatenate(
-        [rng.choice(g, size=min(per, len(g)), replace=False) for g in groups]))
+    # 2. stratify the remaining (lower-P) pool by value bins
+    rest = order_desc[n_top:]
+    n_rem = n - len(top)
+    p = prob[rest]
+    lo, hi = float(p.min()), float(p.max()) if len(p) else (0.0, 0.0)
+    if len(rest) <= n_rem:
+        rem_pick = rest
+    elif hi <= lo:
+        rem_pick = rng.choice(rest, size=n_rem, replace=False)
+    else:
+        edges = np.linspace(lo, hi, n_bins + 1)
+        bin_id = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+        groups = [rest[bin_id == b] for b in range(n_bins)]
+        groups = [g for g in groups if len(g)]
+        per = max(1, n_rem // len(groups))
+        rem_pick = np.unique(np.concatenate(
+            [rng.choice(g, size=min(per, len(g)), replace=False)
+             for g in groups]))
+        if len(rem_pick) < n_rem:               # top up from the remainder
+            leftover = np.setdiff1d(rest, rem_pick)
+            if len(leftover):
+                rem_pick = np.unique(np.concatenate([
+                    rem_pick,
+                    rng.choice(leftover, size=min(n_rem - len(rem_pick),
+                                                  len(leftover)),
+                               replace=False)]))
 
-    if len(picked) < n:                        # top up from the remainder
-        rest = np.setdiff1d(idx, picked)
-        if len(rest):
-            picked = np.unique(np.concatenate([
-                picked,
-                rng.choice(rest, size=min(n - len(picked), len(rest)),
-                           replace=False)]))
-    elif len(picked) > n:
-        picked = rng.choice(picked, size=n, replace=False)
+    picked = np.unique(np.concatenate([top, rem_pick]))
+    if len(picked) > n:                          # trim the stratified excess
+        drop = rng.choice(np.setdiff1d(picked, top),
+                          size=len(picked) - n, replace=False)
+        picked = np.setdiff1d(picked, drop)
     return np.sort(picked)
 
 

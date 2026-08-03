@@ -52,6 +52,19 @@ def test_stratified_selection_spans_the_score_range():
     assert len(np.unique(strat)) == 40
 
 
+def test_top_candidates_are_guaranteed_included():
+    # the strongest general candidates (top-P) must always be shown, not left
+    # to a bin lottery -- mirrors the paper's curation of a balanced set
+    rng = np.random.default_rng(0)
+    prob = rng.uniform(0, 1, 500)
+    prob[:490] = rng.uniform(0, 0.05, 490)      # realistic: mostly memorized
+    active = np.ones(500, dtype=bool)
+    sel = select_features(prob, active, 40, "stratified", seed=1, top_frac=0.4)
+    top16 = set(np.argsort(prob)[::-1][:16].tolist())   # floor(0.4 * 40)
+    assert top16.issubset(set(sel.tolist()))
+    assert len(sel) == 40 and len(np.unique(sel)) == 40
+
+
 def test_selection_excludes_dead_features():
     prob = np.linspace(0, 1, 100)
     active = np.zeros(100, dtype=bool)
