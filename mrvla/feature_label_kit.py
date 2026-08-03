@@ -526,6 +526,32 @@ def loo_cv_accuracy(X: np.ndarray, y: np.ndarray, l2: float = 1.0) -> float:
     return correct / max(n, 1)
 
 
+def single_metric_auc(values: np.ndarray, labels: np.ndarray) -> float:
+    """AUC of one metric for predicting the label (1=general, 0=memorized).
+
+    AUC = P(a random general scores above a random memorized) on this metric.
+    0.5 = the metric does not separate the two label groups at all; >0.7 =
+    clear separation in the paper's expected direction; <0.5 = separation in
+    the OPPOSITE direction (e.g. labelled generals have LOWER onset counts).
+    Computed from mean ranks (Mann-Whitney), tie-corrected.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    labels = np.asarray(labels)
+    pos, neg = (labels == 1), (labels == 0)
+    n_pos, n_neg = int(pos.sum()), int(neg.sum())
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+    order = np.argsort(values, kind="stable")
+    ranks = np.empty(len(values), dtype=np.float64)
+    ranks[order] = np.arange(1, len(values) + 1)
+    vals, inv, counts = np.unique(values, return_inverse=True,
+                                  return_counts=True)
+    mean_rank = np.bincount(inv, weights=ranks) / counts
+    ranks = mean_rank[inv]                       # average ties
+    return float((ranks[pos].sum() - n_pos * (n_pos + 1) / 2) /
+                 (n_pos * n_neg))
+
+
 def cohens_kappa(a: list[str], b: list[str]) -> float:
     """Cohen's kappa for two annotators over the same items."""
     cats = sorted(set(a) | set(b))
@@ -685,6 +711,67 @@ def cmd_fit(args) -> None:
         print(f"[fit] wrote {p}")
 
 
+def cmd_diagnose(args) -> None:
+    """Is the labelling aligned with the metrics, and in which direction?
+
+    For each of the four classifier metrics, report the mean over the
+    general-labelled vs memorized-labelled features and the single-metric AUC.
+    This separates two explanations for a flat refit: noisy labels (no metric
+    separates, all AUC ~0.5) versus a layer where generality is simply not
+    expressed through these metrics (labels may still be internally consistent
+    but the paper's statistics do not capture what the annotator saw).
+    """
+    labels = read_labels(args.labels)
+    hidden = json.load(open(args.metrics))
+    feats = hidden["features"]
+    pos = {f: i for i, f in enumerate(feats)}
+    use = [f for f in labels if f in pos]
+    y = np.array([1 if labels[f] == "general" else 0 for f in use])
+    n_gen = int(y.sum())
+    print(f"[diagnose] {len(use)} labelled  ({n_gen} general, "
+          f"{len(use) - n_gen} memorized)")
+    if n_gen == 0 or n_gen == len(use):
+        raise SystemExit("labels are single-class; nothing to separate")
+
+    print(f"\n  {'metric':<16} {'general':>9} {'memorized':>10} {'AUC':>6}  "
+          f"direction")
+    expected_sign = {"mean_onsets": +1, "coverage": +1, "mean_act_mag": +1,
+                     "rel_run_length": -1}
+    flat = []
+    for k in METRIC_KEYS:
+        v = np.array([hidden["metrics"][k][pos[f]] for f in use])
+        auc = single_metric_auc(v, y)
+        gm, mm = v[y == 1].mean(), v[y == 0].mean()
+        # is separation in the paper's expected direction?
+        want = expected_sign[k]
+        ok = "as paper expects" if (auc - 0.5) * want > 0.05 else \
+             ("OPPOSITE to paper" if (auc - 0.5) * want < -0.05 else
+              "no separation")
+        if abs(auc - 0.5) < 0.1:
+            flat.append(k)
+        print(f"  {k:<16} {gm:>9.3f} {mm:>10.3f} {auc:>6.2f}  {ok}")
+
+    print()
+    if len(flat) == len(METRIC_KEYS):
+        print("  VERDICT: no metric separates your labels (all AUC ~0.5).")
+        print("    Either the labels are inconsistent, OR this layer does not")
+        print("    express generality through these four metrics. Check a")
+        print("    layer with known bursty candidates (e.g. layer 31) to tell")
+        print("    these apart: if the metrics separate there, the labels are")
+        print("    fine and this layer is simply weak; if not, revisit the")
+        print("    labelling protocol.")
+    elif "mean_onsets" in flat:
+        print("  NOTE: onset count (the paper's strongest predictor) does not")
+        print("    separate your labels on this layer. If coverage still does,")
+        print("    your generals are broad but not bursty here -- consistent")
+        print("    with a layer whose top candidates had onset ~1.")
+    else:
+        print("  Metrics do separate your labels; a flat logistic refit is")
+        print("    then likely collinearity + ridge shrinkage. Re-run `fit`")
+        print("    with a smaller --l2 (e.g. 0.1) and read LOO-CV, not the")
+        print("    individual coefficients.")
+
+
 def cmd_agreement(args) -> None:
     a, b = (read_labels(p) for p in args.labels)
     shared = sorted(set(a) & set(b))
@@ -735,6 +822,12 @@ def main() -> None:
     f.add_argument("--out-dir", default=None)
     f.add_argument("--l2", type=float, default=1.0)
     f.set_defaults(func=cmd_fit)
+
+    d = sub.add_parser("diagnose",
+                       help="per-metric separability of your labels (AUC)")
+    d.add_argument("--labels", required=True)
+    d.add_argument("--metrics", required=True)
+    d.set_defaults(func=cmd_diagnose)
 
     a = sub.add_parser("agreement", help="Cohen's kappa between annotators")
     a.add_argument("--labels", nargs=2, required=True)
