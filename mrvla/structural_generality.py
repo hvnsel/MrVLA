@@ -228,22 +228,38 @@ def _spearman(a: np.ndarray, b: np.ndarray) -> float:
 
 def logo_group_prediction(fired_EF: np.ndarray, ep_groups: np.ndarray,
                           group_ids: np.ndarray, rho: float = RHO,
-                          min_active: int = 5) -> dict:
+                          min_active: int = 5, score: str = "max",
+                          keep: np.ndarray | None = None) -> dict:
     """Does generality on G-1 groups predict firing in the held-out group?
 
-    For each held-out group g*, compute ``max_group_rate`` on the remaining
+    For each held-out group g*, compute a group-balanced score on the remaining
     groups (the score never sees g*), then correlate it across features with
     the within-g* firing rate.  A positive mean rank correlation means the
     structural score predicts behaviour in a context it was not fit on -- the
-    external test raw coverage cannot pose.  Restricted to features active in
-    the training groups (max rate over them > 0) so the correlation is not
-    dominated by dead features.
+    external test raw coverage cannot pose.
+
+    ``score`` selects the training statistic: ``"max"`` (max_group_rate) or
+    ``"mean"`` (mean_group_rate).  ``mean`` saturates far less at deep, dense
+    layers, so comparing the two separates real dissolution (both ~0 with
+    variance present) from measurement collapse (max ties out, mean recovers).
+
+    ``keep`` is an optional [F] bool feature mask (e.g. exclude clocks).  Only
+    kept features that are also active in the training groups
+    (score > 1/min_active) enter the correlation, so it is not dominated by
+    dead features.
+
+    Also returns ``mean_heldout_var`` -- the mean over folds of the variance of
+    the held-out firing rate across the correlated features.  A near-zero value
+    means there was almost no signal to predict (everything fires ~equally), so
+    a ~0 Spearman is uninformative rather than evidence of no generality.
     """
     G = len(group_ids)
     if G < 2:
-        return {"mean_spearman": float("nan"), "per_group": []}
+        return {"mean_spearman": float("nan"), "mean_heldout_var": float("nan"),
+                "per_group": []}
+    key = "mean_group_rate" if score == "mean" else "max_group_rate"
     per = []
-    for gi, g in enumerate(group_ids):
+    for g in group_ids:
         held = ep_groups == g
         train = ~held
         if not held.any() or not train.any():
@@ -251,14 +267,19 @@ def logo_group_prediction(fired_EF: np.ndarray, ep_groups: np.ndarray,
         train_ids = np.unique(ep_groups[train])
         train_rel = group_reliability(fired_EF[train], ep_groups[train],
                                       train_ids, rho)
-        train_score = train_rel["max_group_rate"]
+        train_score = train_rel[key]
         held_rate = fired_EF[held].mean(axis=0)
         active = train_score > (1.0 / max(min_active, 1))
+        if keep is not None:
+            active = active & keep
         rho_s = _spearman(train_score[active], held_rate[active])
+        hv = float(np.var(held_rate[active])) if active.sum() else float("nan")
         per.append({"group": int(g), "n_active": int(active.sum()),
-                    "spearman": rho_s})
+                    "spearman": rho_s, "heldout_var": hv})
     vals = [p["spearman"] for p in per if np.isfinite(p["spearman"])]
+    hvs = [p["heldout_var"] for p in per if np.isfinite(p["heldout_var"])]
     return {"mean_spearman": float(np.mean(vals)) if vals else float("nan"),
+            "mean_heldout_var": float(np.mean(hvs)) if hvs else float("nan"),
             "per_group": per}
 
 
@@ -346,11 +367,30 @@ def main() -> None:
 
         ep_ids, ep_groups, group_ids = episode_group_map(episode, group_key)
         fired = fired_per_episode(z, episode, ep_ids, args.tau)
-        logo = logo_group_prediction(fired, ep_groups, group_ids, args.rho)
 
         active = st["max_group_rate"] > 0
         paper_general = paper_p >= THRESHOLD
         struct_general = st["is_general_candidate"]
+        not_clock = ~st["is_clock"]
+
+        # External validity, three views to separate real dissolution from
+        # measurement collapse at deep/dense layers:
+        #   max          -- saturates when most features fire everywhere
+        #   mean         -- unsaturated continuous score
+        #   mean, -clock -- unsaturated, clocks excluded
+        logo = logo_group_prediction(fired, ep_groups, group_ids, args.rho,
+                                     score="max")
+        logo_mean = logo_group_prediction(fired, ep_groups, group_ids, args.rho,
+                                          score="mean")
+        logo_mean_nc = logo_group_prediction(fired, ep_groups, group_ids,
+                                             args.rho, score="mean",
+                                             keep=not_clock)
+
+        # Saturation: fraction of active features whose max/mean group rate is
+        # already >= 0.9 (a tie-out that forces Spearman toward 0).
+        act = active
+        sat_max = float((st["max_group_rate"][act] >= 0.9).mean()) if act.any() else float("nan")
+        sat_mean = float((st["mean_group_rate"][act] >= 0.9).mean()) if act.any() else float("nan")
 
         # RESCUED: paper says memorized, structure says general (F1381-like)
         rescued = np.where(active & ~paper_general & struct_general)[0]
@@ -365,8 +405,12 @@ def main() -> None:
         print(f"  paper-general={int((paper_general & active).sum())}  "
               f"struct-candidates={int((struct_general & active).sum())}  "
               f"clocks={int((st['is_clock'] & active).sum())}", flush=True)
-        print(f"  leave-one-group-out mean Spearman(train score -> held-out "
-              f"firing) = {logo['mean_spearman']:.3f}", flush=True)
+        print(f"  saturation: max>=0.9 in {100*sat_max:.0f}% of active, "
+              f"mean>=0.9 in {100*sat_mean:.0f}%", flush=True)
+        print(f"  LOGO Spearman  max={logo['mean_spearman']:.3f}  "
+              f"mean={logo_mean['mean_spearman']:.3f}  "
+              f"mean-no-clock={logo_mean_nc['mean_spearman']:.3f}  "
+              f"(held-out var={logo_mean['mean_heldout_var']:.4f})", flush=True)
 
         if len(rescued):
             print(f"  -- rescued (paper memorized -> structural general), "
@@ -412,7 +456,12 @@ def main() -> None:
             "n_struct_candidates": int((struct_general & active).sum()),
             "n_clocks": int((st["is_clock"] & active).sum()),
             "n_rescued": int(len(rescued)),
-            "logo_mean_spearman": logo["mean_spearman"],
+            "sat_max_ge_0.9": sat_max,
+            "sat_mean_ge_0.9": sat_mean,
+            "logo_spearman_max": logo["mean_spearman"],
+            "logo_spearman_mean": logo_mean["mean_spearman"],
+            "logo_spearman_mean_no_clock": logo_mean_nc["mean_spearman"],
+            "logo_heldout_var_mean": logo_mean["mean_heldout_var"],
         }
 
     with open(os.path.join(args.out_dir, "summary.json"), "w") as f:
