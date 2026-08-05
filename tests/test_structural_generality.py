@@ -241,6 +241,38 @@ def test_logo_prediction_positive_for_general():
     assert logo["mean_spearman"] > 0.0
 
 
+def test_logo_mean_variant_and_heldout_var():
+    """The mean-score variant runs, and held-out variance is reported > 0.
+
+    With distinct archetypes the held-out firing rate varies across features,
+    so a ~0 Spearman (were it to occur) could be told apart from a saturated
+    no-variance case.  Here variance must be clearly positive.
+    """
+    z, ep, ts, task = build_synthetic()
+    ep_ids, ep_groups, group_ids = episode_group_map(ep, task)
+    fired = fired_per_episode(z, ep, ep_ids)
+    logo = logo_group_prediction(fired, ep_groups, group_ids, score="mean")
+    assert np.isfinite(logo["mean_spearman"])
+    assert logo["mean_heldout_var"] > 0.0
+
+
+def test_logo_clock_exclusion_mask():
+    """Passing keep=~is_clock restricts the correlation to non-clock features."""
+    z, ep, ts, task = build_synthetic()
+    ep_ids, ep_groups, group_ids = episode_group_map(ep, task)
+    fired = fired_per_episode(z, ep, ep_ids)
+    st = compute_structural(z, ep, ts, task)
+    keep = ~st["is_clock"]
+    logo = logo_group_prediction(fired, ep_groups, group_ids, score="mean",
+                                 keep=keep)
+    base = logo_group_prediction(fired, ep_groups, group_ids, score="mean")
+    b = {p["group"]: p["n_active"] for p in base["per_group"]}
+    # the clock is active in the base set, so masking must drop at least one
+    # feature in every fold and never add any
+    for p in logo["per_group"]:
+        assert p["n_active"] < b[p["group"]]
+
+
 def test_dead_feature_is_inert():
     z, ep, ts, task = build_synthetic()
     st = compute_structural(z, ep, ts, task)
