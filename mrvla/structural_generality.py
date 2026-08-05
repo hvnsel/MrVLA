@@ -214,16 +214,41 @@ def onset_phase_stats(z: np.ndarray, episode: np.ndarray, timestep: np.ndarray,
 # ---------------------------------------------------------------------------
 # External validity: leave-one-group-out prediction
 # ---------------------------------------------------------------------------
+def _ranks(x: np.ndarray) -> np.ndarray:
+    r = np.argsort(np.argsort(x)).astype(np.float64)
+    return r - r.mean()
+
+
+def _corr(a: np.ndarray, b: np.ndarray) -> float:
+    d = np.sqrt((a ** 2).sum() * (b ** 2).sum())
+    return float((a * b).sum() / d) if d > 0 else float("nan")
+
+
 def _spearman(a: np.ndarray, b: np.ndarray) -> float:
     m = np.isfinite(a) & np.isfinite(b)
     if m.sum() < 3:
         return float("nan")
-    ra = np.argsort(np.argsort(a[m]))
-    rb = np.argsort(np.argsort(b[m]))
-    ra = ra - ra.mean()
-    rb = rb - rb.mean()
-    d = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
-    return float((ra * rb).sum() / d) if d > 0 else float("nan")
+    return _corr(_ranks(a[m]), _ranks(b[m]))
+
+
+def _partial_spearman(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Rank correlation of a and b with c partialled out (base-rate control).
+
+    Residualize the rank vectors of a and b on the rank vector of c, then
+    correlate the residuals.  Used to ask whether a structural score predicts
+    held-out firing *beyond* what the feature's overall base firing rate (c)
+    already predicts -- the confound-first test principle #2.
+    """
+    m = np.isfinite(a) & np.isfinite(b) & np.isfinite(c)
+    if m.sum() < 4:
+        return float("nan")
+    ra, rb, rc = _ranks(a[m]), _ranks(b[m]), _ranks(c[m])
+    denom = (rc ** 2).sum()
+    if denom == 0:
+        return _corr(ra, rb)
+    ra_res = ra - (ra * rc).sum() / denom * rc
+    rb_res = rb - (rb * rc).sum() / denom * rc
+    return _corr(ra_res, rb_res)
 
 
 def logo_group_prediction(fired_EF: np.ndarray, ep_groups: np.ndarray,
@@ -269,16 +294,25 @@ def logo_group_prediction(fired_EF: np.ndarray, ep_groups: np.ndarray,
                                       train_ids, rho)
         train_score = train_rel[key]
         held_rate = fired_EF[held].mean(axis=0)
+        # base rate = overall training firing rate, ignoring groups. Under
+        # balanced groups this ~equals mean_group_rate (and raw coverage), so
+        # the partial correlation isolates any predictive power beyond activity.
+        base_rate = fired_EF[train].mean(axis=0)
         active = train_score > (1.0 / max(min_active, 1))
         if keep is not None:
             active = active & keep
         rho_s = _spearman(train_score[active], held_rate[active])
+        rho_p = _partial_spearman(train_score[active], held_rate[active],
+                                  base_rate[active])
         hv = float(np.var(held_rate[active])) if active.sum() else float("nan")
         per.append({"group": int(g), "n_active": int(active.sum()),
-                    "spearman": rho_s, "heldout_var": hv})
+                    "spearman": rho_s, "partial_spearman": rho_p,
+                    "heldout_var": hv})
     vals = [p["spearman"] for p in per if np.isfinite(p["spearman"])]
+    pvals = [p["partial_spearman"] for p in per if np.isfinite(p["partial_spearman"])]
     hvs = [p["heldout_var"] for p in per if np.isfinite(p["heldout_var"])]
     return {"mean_spearman": float(np.mean(vals)) if vals else float("nan"),
+            "mean_partial_spearman": float(np.mean(pvals)) if pvals else float("nan"),
             "mean_heldout_var": float(np.mean(hvs)) if hvs else float("nan"),
             "per_group": per}
 
@@ -411,6 +445,15 @@ def main() -> None:
               f"mean={logo_mean['mean_spearman']:.3f}  "
               f"mean-no-clock={logo_mean_nc['mean_spearman']:.3f}  "
               f"(held-out var={logo_mean['mean_heldout_var']:.4f})", flush=True)
+        # Base-rate control: does the score predict held-out firing BEYOND the
+        # feature's overall activity?  Under balanced groups mean~=coverage~=base
+        # rate, so mean-partial should collapse toward 0 (a sanity check); any
+        # surviving max-partial is genuine cross-context structure, not activity.
+        print(f"  LOGO partial (base-rate controlled)  "
+              f"max={logo['mean_partial_spearman']:.3f}  "
+              f"mean={logo_mean['mean_partial_spearman']:.3f}  "
+              f"mean-no-clock={logo_mean_nc['mean_partial_spearman']:.3f}",
+              flush=True)
 
         if len(rescued):
             print(f"  -- rescued (paper memorized -> structural general), "
@@ -461,6 +504,9 @@ def main() -> None:
             "logo_spearman_max": logo["mean_spearman"],
             "logo_spearman_mean": logo_mean["mean_spearman"],
             "logo_spearman_mean_no_clock": logo_mean_nc["mean_spearman"],
+            "logo_partial_max": logo["mean_partial_spearman"],
+            "logo_partial_mean": logo_mean["mean_partial_spearman"],
+            "logo_partial_mean_no_clock": logo_mean_nc["mean_partial_spearman"],
             "logo_heldout_var_mean": logo_mean["mean_heldout_var"],
         }
 

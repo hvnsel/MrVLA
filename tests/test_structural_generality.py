@@ -273,6 +273,39 @@ def test_logo_clock_exclusion_mask():
         assert p["n_active"] < b[p["group"]]
 
 
+def test_partial_spearman_controls_base_rate():
+    """A score that is pure base-rate + noise has ~0 partial correlation.
+
+    Construct held_rate strongly driven by a base-rate variable, and a score
+    that equals base rate plus independent noise.  The raw Spearman is high
+    (score tracks base rate tracks held_rate) but the partial correlation --
+    held_rate vs score with base rate removed -- must be near zero.
+    """
+    from mrvla.structural_generality import _spearman, _partial_spearman
+    rng = np.random.default_rng(1)
+    n = 400
+    base = rng.uniform(0, 1, n)
+    held = base + 0.05 * rng.standard_normal(n)     # driven by base rate
+    score = base + 0.05 * rng.standard_normal(n)     # also only base rate + noise
+    raw = _spearman(score, held)
+    partial = _partial_spearman(score, held, base)
+    assert raw > 0.8                                 # looks predictive
+    assert abs(partial) < 0.2                        # but nothing beyond base rate
+
+
+def test_partial_spearman_keeps_real_signal():
+    """A score with structure beyond base rate retains a positive partial."""
+    from mrvla.structural_generality import _partial_spearman
+    rng = np.random.default_rng(2)
+    n = 400
+    base = rng.uniform(0, 1, n)
+    extra = rng.uniform(0, 1, n)                      # independent real signal
+    held = base + extra + 0.02 * rng.standard_normal(n)
+    score = base + extra + 0.02 * rng.standard_normal(n)
+    partial = _partial_spearman(score, held, base)
+    assert partial > 0.5                             # signal survives base-rate control
+
+
 def test_dead_feature_is_inert():
     z, ep, ts, task = build_synthetic()
     st = compute_structural(z, ep, ts, task)
