@@ -33,6 +33,7 @@ from mrvla.cross_model_recurrence import (  # noqa: E402
     base_rate_residual,
     column_correlations,
     cross_model_q,
+    cross_model_q_permuted,
     greedy_q,
     recurrence_report,
     summarize,
@@ -158,6 +159,21 @@ def test_noise_floor_retention_separates_universal_from_specific():
     assert np.nanmean(rep["retention"][UNIV]) > np.nanmean(rep["retention"][SPEC]) + 0.3
     # specific features drop far more from seed->cross than universal do
     assert rep["drop"][SPEC].mean() > rep["drop"][UNIV].mean() + 0.2
+
+
+def test_permutation_null_is_below_real_recurrence():
+    """Shuffling frames destroys real correspondence: universal features must sit
+    clearly above their permutation null, while the null is non-zero (best-of-F)."""
+    codes, _, _, _ = build_scenario()
+    rng = np.random.default_rng(3)
+    q = cross_model_q(codes["A"], [codes["B"], codes["C"]])
+    q_perm = cross_model_q_permuted(codes["A"], [codes["B"], codes["C"]], rng, n_perm=2)
+    # the null is a real floor (max over many features), not ~0
+    assert q_perm[UNIV].mean() > 0.0
+    # but genuine recurrence sits well above it for universal features
+    assert q[UNIV].mean() > q_perm[UNIV].mean() + 0.3
+    # specific features, which do not truly recur, are NOT far above their null
+    assert q[SPEC].mean() - q_perm[SPEC].mean() < q[UNIV].mean() - q_perm[UNIV].mean()
 
 
 def test_hungarian_matches_greedy_on_clear_signal():
