@@ -66,6 +66,15 @@ def analyze_file(path: str, topn: int = 12) -> dict:
         "spread_p90_p10": float(pcts[4] - pcts[0]),
     }
 
+    # permutation null (chance floor for best-of-F max-matching), if present
+    if "q_perm" in d:
+        qp = d["q_perm"].astype(np.float64)[active]
+        out["q_perm_mean"] = float(qp.mean())
+        out["q_gap_mean"] = float(qa.mean() - qp.mean())     # signal above chance
+        # spread of the CHANCE-corrected signal, per feature
+        gap = q[active] - d["q_perm"].astype(np.float64)[active]
+        out["gap_frac_positive"] = float((gap > 0).mean())   # fraction above own null
+
     # confound regression on ranks (monotone, scale-free)
     ry = _ranks(q[active])
     cols = [_ranks(br[active])]
@@ -97,17 +106,18 @@ def main() -> None:
     args = p.parse_args()
 
     layers = [int(x) for x in args.layers.split(",") if x.strip()]
-    print(f"{'layer/target':22s} {'nact':>5} {'qmean':>6} {'qstd':>6} "
-          f"{'p10':>5} {'p50':>5} {'p90':>5} {'conf_R2':>7} {'free_frac':>9}")
-    print("-" * 79)
+    print(f"{'layer/target':22s} {'nact':>5} {'qmean':>6} {'qperm':>6} {'gap':>6} "
+          f"{'qstd':>6} {'conf_R2':>7} {'free_frac':>9}")
+    print("-" * 76)
     for layer in layers:
         files = sorted(glob.glob(os.path.join(args.rec_dir, f"layer_{layer:02d}_target_*.npz")))
         for path in files:
             tag = os.path.basename(path).replace(".npz", "").replace("layer_", "L").replace("_target_", "/")
             r = analyze_file(path, args.topn)
-            print(f"{tag:22s} {r['n_active']:5d} {r['q_mean']:6.3f} {r['q_std']:6.3f} "
-                  f"{r['q_p10']:5.2f} {r['q_p50']:5.2f} {r['q_p90']:5.2f} "
-                  f"{r['confound_r2']:7.3f} {r['confound_free_frac']:9.3f}")
+            qperm = f"{r['q_perm_mean']:6.3f}" if "q_perm_mean" in r else "   n/a"
+            gap = f"{r['q_gap_mean']:+6.3f}" if "q_gap_mean" in r else "   n/a"
+            print(f"{tag:22s} {r['n_active']:5d} {r['q_mean']:6.3f} {qperm} {gap} "
+                  f"{r['q_std']:6.3f} {r['confound_r2']:7.3f} {r['confound_free_frac']:9.3f}")
     print("\nHow to read:")
     print("  qstd / (p90-p10): spread. Near 0 => every feature recurs equally => no")
     print("     discriminating axis (null). Wide => a real general-vs-specific axis.")

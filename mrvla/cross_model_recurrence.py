@@ -138,6 +138,28 @@ def cross_model_q(Z_target: np.ndarray, Z_others: list[np.ndarray],
     return np.mean(np.stack(qs, axis=0), axis=0)   # [F]
 
 
+def cross_model_q_permuted(Z_target: np.ndarray, Z_others: list[np.ndarray],
+                           rng: np.random.Generator, n_perm: int = 1,
+                           method: str = "greedy") -> np.ndarray:
+    """Chance floor for q_cross: match against row-PERMUTED other models.
+
+    Shuffling the frame order of each other model destroys the real frame-by-frame
+    correspondence while preserving every feature's marginal statistics (base rate,
+    activation shape) AND the same best-of-F max-matching.  So this is the baseline
+    q_cross you would get with no genuine cross-model correspondence.  Real
+    recurrence must sit clearly ABOVE this; the excess (q_cross - q_perm) is the
+    signal that is not a max-over-many artifact.
+    """
+    match = hungarian_q if method == "hungarian" else greedy_q
+    qs = []
+    for _ in range(max(1, n_perm)):
+        for Z in Z_others:
+            Zp = Z[rng.permutation(Z.shape[0])]
+            q, _ = match(column_correlations(Z_target, Zp))
+            qs.append(q)
+    return np.mean(np.stack(qs, axis=0), axis=0)
+
+
 def base_rate(Z: np.ndarray, tau: float = 0.0) -> np.ndarray:
     """Per-feature fraction of frames on which the feature is active (> tau)."""
     return (np.asarray(Z) > tau).mean(axis=0)

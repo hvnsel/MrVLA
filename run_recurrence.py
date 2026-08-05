@@ -39,6 +39,7 @@ from mrvla.extract_codes_and_metrics import sae_forward
 from mrvla.cross_model_recurrence import (
     base_rate,
     base_rate_residual,
+    cross_model_q_permuted,
     recurrence_report,
     summarize,
 )
@@ -98,9 +99,12 @@ def main() -> None:
     p.add_argument("--layers", default="0,8,16,24,31")
     p.add_argument("--out", required=True)
     p.add_argument("--method", default="greedy", choices=("greedy", "hungarian"))
+    p.add_argument("--n-perm", type=int, default=1,
+                   help="Permutation-null repeats (chance floor for max-matching). 0 skips.")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--batch-size", type=int, default=4096)
     args = p.parse_args()
+    perm_rng = np.random.default_rng(0)
 
     device = args.device if torch.cuda.is_available() else "cpu"
     os.makedirs(args.out, exist_ok=True)
@@ -135,6 +139,16 @@ def main() -> None:
             rep = recurrence_report(codes, target=target, method=args.method)
             s = summarize(rep)
 
+            # permutation null: chance floor for the best-of-F max-matching
+            q_perm = None
+            if args.n_perm > 0:
+                others = [codes[k] for k in ft_keys if k != target]
+                q_perm = cross_model_q_permuted(codes[target], others, perm_rng,
+                                                n_perm=args.n_perm, method=args.method)
+                act = rep["is_active"]
+                s["q_perm_mean"] = float(np.nanmean(q_perm[act])) if act.any() else float("nan")
+                s["q_gap_mean"] = s["q_cross_mean"] - s["q_perm_mean"]
+
             inh_corr = None
             if base_acts is not None:
                 Zb = encode(base_acts[:, lp, :], sae_map[target], layer_idx, device, args.batch_size)
@@ -145,16 +159,23 @@ def main() -> None:
                 s["inheritance_mean"] = float(np.nanmean(inh[act])) if act.any() else float("nan")
 
             resid = base_rate_residual(rep["q_cross"], rep["base_rate"], rep["is_active"])
-            np.savez_compressed(
-                os.path.join(args.out, f"layer_{layer_idx:02d}_target_{target}.npz"),
+            save = dict(
                 q_cross=rep["q_cross"], base_rate=rep["base_rate"],
                 is_active=rep["is_active"].astype(np.uint8),
                 qcross_baserate_residual_rank=resid,
-                **({"inheritance": inh} if base_acts is not None else {}),
             )
+            if base_acts is not None:
+                save["inheritance"] = inh
+            if q_perm is not None:
+                save["q_perm"] = q_perm
+            np.savez_compressed(
+                os.path.join(args.out, f"layer_{layer_idx:02d}_target_{target}.npz"), **save)
+            gap_str = (f"  q_perm={s['q_perm_mean']:.3f}  gap={s['q_gap_mean']:+.3f}"
+                       if q_perm is not None else "")
             print(f"  target={target:9s}  active={s['n_active']:4d}  "
-                  f"q_cross mean={s['q_cross_mean']:.3f} median={s['q_cross_median']:.3f}  "
-                  f"q~baserate={s['spearman_qcross_baserate']:+.3f}"
+                  f"q_cross mean={s['q_cross_mean']:.3f} median={s['q_cross_median']:.3f}"
+                  + gap_str
+                  + f"  q~baserate={s['spearman_qcross_baserate']:+.3f}"
                   + (f"  q~inherit={inh_corr:+.3f}" if inh_corr is not None else ""),
                   flush=True)
             layer_out[target] = s
