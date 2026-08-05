@@ -1,374 +1,250 @@
-# Experimental Plan: Are SAE Generality Labels in VLAs Meaningful?
+# Experimental Plan: Measuring Generality in VLA SAE Features
 
-**Status:** pre-registration draft. Written *before* results are collected so that
-interpretations cannot be chosen after the fact.
+**Status:** living plan. Section 2 records dated findings (things already tested and
+ruled out); Sections 1 and 3–5 are the forward plan. The original pre-registration
+(the classifier-replication study) is preserved in git history and summarised in the
+Appendix — this document supersedes it after the reframe of 2026-08.
 
 **Reference paper under study:** Swann, McGranahan, Buurmeijer, Kennedy, Schwager,
 *"Sparse Autoencoders Reveal Interpretable and Steerable Features in VLA Models"*,
-arXiv:2603.19183 (Stanford, 2026). Their metrics and classifier are Sections 3.2–3.3;
-their OpenVLA results are Table 2.
+arXiv:2603.19183 (Stanford, 2026). Metrics/classifier: §3.2–3.3; OpenVLA results: Table 2.
+
+**Substrate already built:** activations collected for OpenVLA fine-tuned on LIBERO
+**Goal, Spatial, Object, 10**, at layers 0/8/16/24/31; TopK SAEs trained per (model,
+layer) on the faithful recipe (ER=0.5→F=2048, k=100, 100 epochs); codes + firing
+metrics extracted. **Caveat that shapes everything below:** the collected activations
+are **mean-pooled over the prompt tokens and captured on the prefill pass only**
+(`hooks.py`). They summarise the input, not the vectors that decode the action.
 
 ---
 
-## 0. Design philosophy
+## 0. Question and philosophy
 
-The central question is:
+The scientific question is unchanged:
 
-> **At what granularity — if any — is SAE-derived "generality" a real, usable signal in a VLA?**
+> **Does the VLA build reusable internal computations (general), or memorise specific
+> situations (memorized)?**
 
-This is framed as a *measurement-validity* study rather than a method proposal, which is
-what makes it robust to outcome. Every phase below has a decision rule and a table
-mapping each possible result to the claim it licenses. Both branches of every phase yield
-a reportable finding; none of them requires the hypothesis to be true.
+This is a **measurement-validity** study, not a method proposal. Every phase has a
+decision rule and yields a reportable result on both branches. Three principles, now
+sharpened by what we found:
 
-The framing to hold throughout: **we are not trying to show anyone is wrong.** We are
-testing whether a measurement transfers and what it supports. A negative is a
-transfer/validity result, not an accusation.
-
-Three principles:
-
-1. **Falsifiable at every level.** Each phase can kill the phase below it, and saying so
-   is a result.
-2. **Confound-first.** No score is used for anything until it has been decomposed against
-   nuisance variables (identity, length, activity, phase).
-3. **Agreement over reliability.** A quantity being *precisely measured* is not evidence
-   it is *real*. Validity comes from agreement across independent views (layers, seeds,
-   models, behaviour).
+1. **Falsifiable at every level.** A metric that fails a validity check is a result.
+2. **Confound-first.** No score is trusted until it is shown to predict something
+   **beyond base firing rate** (activity). This principle already killed one metric
+   family (§2.2) — it is load-bearing.
+3. **Agreement over reliability.** Precise measurement is not validity. Validity comes
+   from agreement across independent views (layers, seeds, models, behaviour).
 
 ---
 
-## Phase 0 — Faithful reimplementation and validation gate
+## 1. Definition of generality (the reframe, 2026-08)
 
-**Purpose:** establish that our implementation of the paper's metrics is correct before
-any conclusion rests on it. This phase exists because an earlier iteration of this project
-produced a dramatic "the classifier inverts" result that was traced to *our own*
-implementation diverging from the paper in three places.
+We **moved the definition off firing statistics and off human semantics.**
 
-### 0.1 The three corrections (already applied in `mrvla/generality_classifier.py`)
+> **General** = a feature whose **causal influence on the policy's action recurs across
+> many tasks**. **Memorized** = influence confined to one task/situation. Generality is
+> a **continuous spectrum**, not a binary.
+>
+> **Human-interpretability is not required.** A feature may be general without any human
+> being able to name what it responds to. Whether general features *also* happen to be
+> interpretable is an empirical question we report, not an assumption we build in.
 
-| Quantity | Paper (Eq.) | Earlier incorrect implementation |
-|---|---|---|
-| Mean activation magnitude `ā` | mean over active episodes of the **per-episode peak** (Eq. 8) | mean of `z` over ON timesteps |
-| Onset state machine | ON when `f > τ_on`; OFF **only when `f == 0`**; else hold (Eq. 5) | single threshold, or a τ_off = 0.05 dead zone |
-| Active-episode set `E⁺` | episodes with **any `f > 0`** (p. 5) | episodes where the thresholded state fired |
-| Reporting denominator | **active** features (Table 2: 1775 at L8) | full dictionary width |
+**Why the change.** The paper defines general as "fires across episodes for a
+human-nameable event," welding together two properties that are actually independent:
 
-### 0.2 Validation runs
+- **Axis 1 — Task-breadth (causal):** does the feature *drive the action* across many
+  tasks?
+- **Axis 2 — Invariance (representational):** does it respond to the *same concept*
+  across different appearances (scene, object instance, lighting)?
 
-Run the corrected classifier on the **existing** `codes_v3` immediately — this needs no
-new data and is the fastest possible check.
+The lid feature (paper App. A.5.1) forced this split: it is **high invariance, low
+breadth** — fires on all lid types/scenes, but only matters in the few lid tasks. A
+grasp detector is high on both; a memorized feature is low on both; a broad control
+signal with no clean concept is high-breadth/low-invariance. One number was averaging
+two orthogonal axes. We measure them separately and place each feature in the quadrant.
 
-```
-python mrvla/generality_classifier.py --codes-dir <codes> --out-dir <gen> --dataset libero
-```
-
-**Measurements:** % general over active features per layer; the coverage / onset /
-peak-magnitude profile of the top-P features; count of features with nonzero-but-
-sub-threshold episodes (tests the paper's `ō ≥ 1` assertion).
-
-**Reference (paper Table 2, OpenVLA / LIBERO-Goal):** Layer 8 → **8 general / 1775 active
-(0.45%)**; LM average over layers 0,8,16,24,31 → 42 / 9389 (99.55% memorized).
-
-**Qualitative reference (paper §4.3.1):** genuine general features have **episode coverage
-> 0.99**, are **bursty** (`ō` ≈ 2–4, scaling with the number of pick-and-place sub-goals),
-and have **low relative run length**. Reported probabilities: F1129 = 0.91, F1902 = 0.89,
-F128 = 0.92, F445 = 0.58.
-
-### 0.3 Decision rule
-
-| Outcome | Interpretation | Action |
-|---|---|---|
-| **0-A.** ~0.2–1% general; top features are high-coverage and bursty | Implementation validated; classifier transfers to our SAE | Proceed to Phase 1 |
-| **0-B.** Prevalence in range, but top features are low-coverage / flickery | Classifier reproduces the *count* but not the *identity* → genuine transfer failure, and a real finding | Proceed, but this becomes a headline result; verify it is not an SAE-quality artifact in Phase 4 |
-| **0-C.** 0% general, or ≫2% | Our SAE differs materially from theirs (training recipe, selectivity, activation scale) | **Do not proceed.** Reconcile SAE training first (§1.2) |
-
-> **Note.** The paper's OpenVLA SAEs use `ER = 0.5` → `F = 2048`, `k = 100` (p.20,
-> "to match the dictionary size of 2048 features for our π0.5 models"). Table 2's 1775
-> active at L8 is ~87% of 2048, the high alive fraction expected of a compact ER=0.5 SAE.
-> So `F = 2048` is the *faithful* OpenVLA width, not a mismatch.
-
-### 0.4 Phase-0 result on `codes_v3` (recorded 2026-08)
-
-Running the faithful classifier on the **old** `codes_v3` SAE gives **0 general at every
-layer** — outcome **0-C**. An initial diagnosis blamed the dictionary width; that was
-**wrong**. The paper trains OpenVLA at `ER = 0.5` → `F = 2048` (p.20), exactly our width,
-and the activation collection is also faithful (prefill activation, mean-pooled over
-tokens, `hooks.py`). The remaining deviation is the **training recipe**: the `codes_v3`
-SAEs were trained for **>500 epochs on some layers**, versus the paper's **100** (Table 4).
-
-The diagnostics show the symptom clearly, and it is consistent with a training-quality
-(feature-selectivity) problem rather than a width one:
-
-- **Coverage saturated at 1.0** for the top features, and **~1962/1964 features have
-  nonzero-but-sub-threshold episodes**. Both mean the features are *not selective*: they
-  appear weakly in the top-K across nearly every episode instead of being exactly zero
-  when irrelevant. A selective feature (the paper's regime) is absent — literally 0, not
-  in the top-K — in the episodes lacking its triggering event.
-- Because leaked sub-threshold episodes sit in E⁺ with zero onsets, they drag `ō` below 1
-  even for genuinely bursty features (e.g. L8 feat 1793: bursty, `rel_rl = 0.17`, yet
-  `ō = 0.77`). No feature reaches the `ō ≈ 2–4` that characterises the paper's general
-  features, so the `β₁ō` term is starved and nothing clears `P ≥ 0.5`.
-
-**Root cause (revised):** a training-recipe deviation (epochs, and possibly others) yields
-non-selective / leaky features. This is not a property of the classifier and not a width
-issue. `train_sae.py` already defaults to the faithful `ER = 0.5` and 100 epochs;
-normalization and collection were already faithful.
-
-**Do not read the classifier's transfer behaviour off this run.** Retrain with the exact
-Table 4 recipe (`ER = 0.5`, `k = 100`, `k_aux = 512`, aux `1/32`, lr `1e-4`,
-Adam(0.9, 0.999), batch 4096, **100 epochs**) and rerun Phase 0. **Acceptance checks for
-the rerun** (all four should improve if the training deviation was the cause):
-
-1. Feature **selectivity returns** — most features become exactly zero in most episodes,
-   so the coverage distribution spreads (most features low-coverage/memorized, a few high)
-   and the nonzero-but-sub-threshold count **drops toward 0**.
-2. Some features show `ō ≈ 2–4` (bursty, multiple onsets) — the signature of the paper's
-   real general features (F1129 fires 2× for single-object, 4× for two-object tasks).
-3. Layer 8 yields **≈ 8 general (0.45%)**, matching Table 2, and those features are bursty
-   with high coverage (not the sustained `ō = 1` features).
-4. A **seed check**: the paper's own multi-seed ablation (Sec A.3, 7 seeds) finds the top
-   features recur across seeds. Reproduce this — if our features do *not* recur across
-   seeds, that is a separate finding (feeds Phase 4.1).
-
-If checks 1–2 improve but general **stays near 0**, that is a genuine transfer-failure
-finding (the classifier does not port to our faithful SAE) rather than a training artifact,
-and it becomes reportable. If it reproduces ~8, the method transfers and Phases 1–2
-proceed.
+**Consequence for existing work.** The 6 firing-based metrics (paper's coverage, mean
+onsets, mean magnitude, relative run length; our group-balanced coverage, phase-
+invariance) are **symptoms** of generality, not the definition. They are demoted to
+*descriptors* (useful for characterising firing, e.g. clock detection) and are no longer
+the generality measure.
 
 ---
 
-## Phase 1 — Data and SAE training
+## 2. What we have tested and ruled out (dated findings)
 
-### 1.1 Activation collection *(in progress)*
-LIBERO **Goal, Spatial, Object, 10**, at layers 0, 8, 16, 24, 31 of OpenVLA.
-Collecting across all four suites is what makes Phases 3–5 possible (cross-suite transfer
-needs held-out suites; cross-model universality needs per-suite fine-tunes).
+### 2.1 The paper's classifier is circular (finding, 2026-08)
 
-### 1.2 SAE configuration — **decision required**
-Match the paper's OpenVLA config exactly (Table 4 + p.20): `ER = 0.5` → `F = 2048`,
-`k = 100`, `k_aux = 512`, aux `1/32`, lr `1e-4`, Adam(0.9, 0.999), batch 4096,
-**100 epochs**, per-sample normalisation (geometric-median pre-bias, mean subtraction,
-L2), unit-norm decoder, AuxK loss. The `codes_v3` run departed on epochs (>500 on some
-layers); that is the known deviation to eliminate. `train_sae.py` now defaults to this
-recipe.
+The classifier is fit to 30 hand labels, but the labels are partly **defined by the same
+four metrics** the classifier regresses onto (Stage-1 candidates screened by burstiness;
+Stage-3 requires the global metrics to agree; ambiguous cases excluded — §3.3.2). So the
+reported **100% LOO-CV measures label↔metric consistency, not construct validity**; it is
+near-guaranteed by construction. This is **criterion contamination + range restriction**,
+not fraud — and the paper documents the resulting failures itself (App. A.5.1: F1939
+home-pose and F1381 lid both mis-classified). Reportable as a methods result.
 
-### 1.3 Seeds
-**≥ 2 SAE seeds per (model, layer)** — mandatory, not optional. This is the noise floor
-for every subsequent claim, and without it no negative result is interpretable.
+### 2.2 Our structural firing metrics are a null (finding, 2026-08)
 
-### 1.4 Models
-The base OpenVLA fine-tune (LIBERO-Goal) plus additional per-suite fine-tunes for
-Phase 4. Note these share a base checkpoint, so they test *robustness*, not statistical
-independence — state this explicitly in the writeup.
+We built two label-free firing metrics — **group-balanced coverage** and
+**phase-invariance** (`mrvla/structural_generality.py`) — and validated them by
+**leave-one-group-out (LOGO)**: does the score on 9 tasks predict a feature's firing in
+the held-out 10th? Raw LOGO looked strong (Spearman 0.3–0.8). **The confound control
+killed it:**
 
----
+- Under LIBERO's **balanced** task groups, `mean_group_rate ≡ raw episode coverage ≡
+  base firing rate`. Partialling out base rate leaves nothing (partial correlation → 0,
+  reported as `nan`). It was base rate all along — **and so is the paper's coverage.**
+- `max_group_rate`, after controlling base rate, correlates **0.94 with concentration**
+  and predicts held-out firing **negatively** (−0.05 to −0.27 across all 20 layer×suite
+  cells). Controlled for activity, it is a **memorization** signal, not a general one.
 
-## Phase 2 — Feature-level generality
+**Root lesson:** a validation target of *firing* cannot isolate generality, because
+firing is activity. Two equally-busy features (one general, one junk) get the same score.
+The firing route is closed. (Diagnostics that proved this — saturation, unsaturated/
+clock-excluded LOGO, base-rate-partial — are in `structural_generality.py` and stay as
+the record.)
 
-The feature level is where generality is *defined*; if it fails here, nothing downstream
-can succeed.
+### 2.3 Attribution gate is red on existing data (finding, 2026-08)
 
-### 2.1 Apply the paper's LIBERO classifier
-Their β, unnormalised metrics, per §3.3.3 (they apply the LIBERO boundary to OpenVLA
-because OpenVLA is also LIBERO fine-tuned).
-
-### 2.2 Refit our own classifier *(validation arm)*
-Hand-label **30–60 features** from our SAE (balanced general/memorized) following the
-paper's three-stage protocol (episode-level screening → cross-episode validation →
-labelling criteria, §3.3.2). Fit logistic regression on our four metrics; report LOO-CV
-accuracy as they do (they achieved 100% on 30 labels).
-
-**This is the single most valuable experiment in the plan.** It removes all dependence on
-borrowed coefficients and converts "does their classifier transfer?" into "what does a
-correctly-fit classifier on *our* model look like?"
-
-### 2.3 Outcomes
-
-| Outcome | Interpretation | Paper contribution |
-|---|---|---|
-| **2-A.** Our fitted β ≈ theirs; classifications agree | The classifier is stable across SAE fits and models; the generality construct is well-posed at the feature level | Positive replication; solid foundation for Phases 3–5 |
-| **2-B.** β differs materially, but both boundaries select similar feature sets | Coefficients are not identifiable from 30 labels, but the decision surface is robust | Methods finding: report coefficient instability, recommend reporting selected-set profiles rather than β |
-| **2-C.** β differs *and* the selected sets differ | The classifier does **not** transfer across SAE fits/models — borrowed coefficients are unsafe | Strong methods result: cross-fit non-transfer of interpretability classifiers |
-| **2-D.** Hand-labelling is not reliably possible (annotators cannot separate general from memorized) | The construct itself is ill-posed at this SAE's resolution | Most fundamental result available; reframes the whole literature's premise. Requires ≥2 annotators + agreement statistic to claim |
-
-**Required control:** inter-annotator agreement (Cohen's κ) on the hand labels. Without it,
-2-D is not claimable and 2-A rests on one person's judgement.
+The causal route (§3.2) needs the **un-pooled last-layer residual at the action-token
+positions** + the action head. Existing activations are **mean-pooled + prefill-only**
+(`hooks.py`), i.e. the wrong vectors, and the SAE was trained on that distribution.
+**Layer-0 of the viability gate fails without a data rebuild** (re-collect action-position
+residuals at L31, log actions/logits, retrain an SAE on them). Recorded so we do not
+re-discover it.
 
 ---
 
-## Phase 3 — The granularity descent
+## 3. Method: measuring generality without firing and without labels
 
-The organising question of the paper. Generality is defined per-feature; we test whether
-it survives aggregation upward.
+Generality must be validated against a target that is **not firing rate**. Three such
+targets; every one keeps the confound-first discipline (must beat base rate).
 
-### 3.1 Episode level
-Score each episode by general-feature content; audit with `mrvla/confound_audit.py`.
+### 3.1 Path B — Cross-model recurrence **(NEXT — chosen 2026-08)**
 
-- **Score constructions:** mass-weighted `Σ z·p / Σ z` and mass-robust count
-  `(1/K) Σ_{j∈A_t} p_j`.
-- **Confounds:** episode length, task identity (η²), mean activation mass, mean L0,
-  idle-frame fraction.
-- **Validity test:** cross-layer consistency of the confound-free residual
-  (`mrvla/residual_consistency.py`).
+**Idea.** A feature is general to the degree the model **rediscovers it when
+independently fine-tuned on a different task suite.** Recurrence is the generality
+measure — base-rate-independent (it is about the activation *pattern* matching across
+models, not how often the feature fires) and label-free.
 
-### 3.2 Frame level
-The refinement the earlier iteration never tested, and the natural response to an
-episode-level null.
+**Why first.** It runs largely on artifacts we already have (the 4 fine-tuned models
+and their SAEs); it needs no action head, no decode-position residuals, and no SAE
+retrain. Cheapest path to a first non-firing generality signal.
 
-- **Score:** per-frame count score `r_t`.
-- **Primary confound: trajectory phase** φ = t/T ∈ [0,1]. If "general" frames are simply
-  the home/transport frames, upweighting them is a phase curriculum that downweights the
-  grasp — an intervention likely to *hurt*.
-- **Variance decomposition:** Var(r) = Var_between-episode + Var_phase|episode + Var_residual.
-- **Validity test:** cross-layer consistency of the phase-residual (same estimator as 3.1).
+**Procedure.**
+1. **Shared probe set.** Choose a fixed set of probe frames and push the *same* frames
+   through each of the 4 models, capturing residuals at each layer (a small collection —
+   forward passes only; the pooled activations we already have suffice for matching).
+2. **Encode** each model's residuals with *that model's* SAE → activation matrices
+   `Z^A [N_frames, F]`, `Z^B [N_frames, F]`, …
+3. **Match features.** For feature *i* in model A, `q_i = max_j corr(Z^A_i, Z^B_j)` over
+   the shared frames (report greedy **and** Hungarian assignment). High `q_i` = the
+   feature has a twin in B = it recurs. `q_i` averaged over the other models is the
+   **recurrence-generality score.**
+4. **Confounds (mandatory).**
+   - **Base rate.** Check `q` predicts beyond base firing rate (busy features may match
+     trivially) via the same partial-correlation control that killed §2.2.
+   - **Shared-base inheritance.** All 4 models share the base OpenVLA checkpoint, which
+     inflates matches. Cancel with the differential against the **same-model /
+     different-seed** noise floor:
+     `Δ* = [q]_cross-model − [q]_same-model-different-seed`.
+     *Requires ≥2 SAE seeds per (model, layer)* — verify these exist; if not, train the
+     second seed (this was a standing commitment in the original plan §1.3).
 
-### 3.3 Outcomes
-
-| Episode | Frame | Interpretation | Paper contribution |
-|---|---|---|---|
-| survives | — | Episode-level generality is real and confound-free | Constructive: proceed to weighted fine-tuning (Phase 6) |
-| dissolves | survives | Generality is a *moment-level* property that averaging destroys | Strong constructive result + a clean explanation of why episode-level fails |
-| dissolves | dissolves into **phase** | The frame score is a stopwatch; "generality" tracks trajectory position | Clean negative with a named mechanism; strong cautionary result |
-| dissolves | dissolves into **task identity** | Both levels measure task mix, not generality | Clean negative; recommend feature/decision-level intervention only |
-
-Note that a null here is only interpretable **given Phase 2-A** (labels are sound). If
-Phase 2 gives 2-C or 2-D, a Phase 3 null is attributable to the labels rather than to
-aggregation, and must be reported that way.
-
----
-
-## Phase 4 — Replication and cross-model universality
-
-### 4.1 Seed replication
-Rerun Phases 2–3 across SAE seeds on the same model.
+**Decision rule.**
 
 | Outcome | Interpretation |
 |---|---|
-| Conclusions stable across seeds | Findings are properties of the *metrics*, not of one dictionary — the strong version of every claim |
-| Conclusions vary across seeds | **SAE non-identifiability dominates generality analysis.** This becomes the headline: single-fit conclusions (including prior work's, and our own) are not reliable at this scale |
+| `Δ* > 0`, resolvable above noise floor | Recurrence is a real, base-rate-free generality signal; high-recurrence features are the "universal" ones. Positive result — proceed to characterise them (interpretable? which quadrant?). |
+| `Δ* ≈ 0`, noise floor resolvable | Features are model-local; generality does not survive independent fine-tuning. Coherent negative. |
+| Noise floor unresolvable (seeds match no better than chance) | SAE non-identifiability dominates at this scale — a methods result; **must not** be read as evidence about generality. |
 
-### 4.2 Cross-model feature universality
-Independent external criterion: do general features recur across models?
+### 3.2 Path A — Causal task-breadth (attribution) *(gated; needs rebuild)*
 
-- **Matching:** identical probe frames through both SAEs; cross-correlate activations;
-  `q_i = max_j corr(Z^A_i, Z^B_j)`; report greedy and Hungarian assignment.
-- **Two confounds:** SAE noise floor (pulls similarity down) and shared-base inheritance
-  (pulls it up). Both cancel in the differential:
+**Definition operationalised.** Feature *j*'s contribution to the emitted action:
+`φ_tj = z_tj · ⟨w_j^dec, u_{d*}⟩` (fired × alignment with the action readout). Aggregate
+to per-task causal importance `C_j(g)`, normalise across tasks, and score generality as
+the **participation ratio** `(Σ_g C_j(g))² / Σ_g C_j(g)²` = *effective number of tasks
+the feature drives* (1 = memorized, 10 = maximally general). Immune to busyness: a
+feature can fire hard and contribute `φ ≈ 0`.
 
-  ```
-  Δ* = [mean q over general − mean q over memorized]_cross-model
-     − [mean q over general − mean q over memorized]_same-model-different-seed
-  ```
+**Viability gate (run before building):**
+- **L0** — have action-position residuals + head? *(Currently NO — §2.3.)*
+- **L1** — feed the SAE reconstruction `ĥ` through the real action head; does it
+  **re-decode to the same action** (≥ ~85–90% of decisions)? Go/no-go.
+- **L2** — does the linear (frozen-norm) attribution track the true logits?
 
-| Outcome | Interpretation | Paper contribution |
-|---|---|---|
-| **Δ\* > 0** | Coverage-generality predicts cross-model recurrence — the label captures something model-independent | External validation; the paper's positive result |
-| **Δ\* ≈ 0**, noise floor resolvable | Generality labels are model-local | Coherent negative: fails every external check |
-| Noise floor unresolvable | SAE non-identifiability prevents cross-model comparison at this scale | Methods result **only** — must not be reported as evidence against generality |
+**Cost:** re-collect un-pooled L31 action-position residuals + log actions/logits;
+retrain an SAE on them. Deferred until B reports.
+
+### 3.3 Axis 2 — Invariance (representational) *(existing data)*
+
+Hold the concept fixed, vary appearance, measure response stability: decompose a
+feature's activation variance into concept (task/phase) vs appearance (scene) with the
+η²/ICC machinery already in `confound_audit.py` / `residual_consistency.py`. A feature is
+invariant if its activation is explained by concept, not appearance. Needs
+same-concept/different-appearance groupings (LIBERO trials, cross-suite primitives).
+Gives the second axis for the breadth×invariance quadrant map.
+
+### 3.4 Behavioral validation *(highest ceiling; needs Path A)*
+
+Does reliance on **non-general** features (low task-breadth) predict **task failure under
+cross-suite shift**? Log the attribution-based reliance per decision alongside
+success/failure on held-out suites. This is the only causal test of the thesis and the
+strongest possible claim; it depends on the Path-A rebuild + gate passing.
 
 ---
 
-## Phase 5 — Behavioural validation
-
-The only phase that tests the hypothesis *causally*, and the one that raises the paper's
-ceiling most. Memorization and fragility are decoupled in-distribution and couple only
-under distribution shift — and LIBERO's four suites supply real shift, so no world model
-or synthetic perturbation is needed.
-
-### 5.1 Attribution probe
-OpenVLA's action is decoded linearly from the residual stream, which the SAE decomposes as
-`h_t ≈ Σ_j z_tj w_j^dec`. The contribution of feature *j* to the emitted action token
-`d*` with unembedding direction `u_{d*}`:
+## 4. Execution order
 
 ```
-φ_tj = z_tj · ⟨ w_j^dec , u_{d*} ⟩
-μ_t  = Σ_{j ∉ general} |φ_tj|  /  Σ_j |φ_tj|
+NOW  →  Path B: cross-model recurrence            (existing artifacts; verify seeds)
+          └─ confound controls: base rate, shared-base noise floor (Δ*)
+THEN →  Axis 2: invariance                        (existing data + confound_audit)
+          └─ assemble breadth×invariance quadrant map
+IF B/committing to causal claim:
+        Path A rebuild: re-collect action-position residuals + retrain SAE
+          └─ viability gate (L0→L2)  ← go/no-go
+          └─ participation-ratio task-breadth score
+        Behavioral: reliance vs cross-suite success   (needs A)
 ```
 
-`μ_t` is the fraction of *decision-relevant* attribution carried by non-general features.
-This distinguishes a memorized feature that merely **fires** from one that actually
-**drives the action** — a distinction no aggregate score can make, and plausibly part of
-why the aggregate scores failed.
-
-**Gate:** if the SAE decomposition does not linearly explain the action (check
-reconstruction of the action logits from `φ`), Phase 5 is not viable. Test this first;
-it is cheap and it is a go/no-go.
-
-### 5.2 Cross-suite transfer evaluation
-Evaluate the LIBERO-Goal policy on held-out suites (Spatial / Object / 10), logging `μ_t`
-per decision alongside success/failure.
-
-### 5.3 Outcomes
-
-| Outcome | Interpretation | Paper contribution |
-|---|---|---|
-| `μ_t` predicts transfer failure | **Memorized-feature reliance causes fragility under shift** — the project's core thesis, externally validated | Main-conference-tier positive result; motivates decision-level intervention |
-| `μ_t` does not predict failure | Memorization is not the axis governing VLA transfer | Substantive negative: constrains a widely-assumed mechanism |
-| Attribution probe fails the gate | Actions are not linearly attributable to SAE features | Methods finding about SAE-based attribution in VLAs; Phase 5 closes |
+Path B is the immediate work. Path A's rebuild is only funded if we want the causal /
+behavioral claim after seeing B.
 
 ---
 
-## Phase 6 — Intervention *(conditional)*
+## 5. Analysis commitments (fixed in advance)
 
-Run **only** if Phase 3 yields a validated confound-free score at some granularity, or
-Phase 5 validates `μ_t`.
-
-Weighted LoRA fine-tuning with the full arm set already implemented in
-`mrvla/episode_weights.py` (uniform / mild / medium / sharp × real / inverted / random),
-evaluated cross-suite. The control arms are load-bearing: **inverted** tests direction,
-**random** tests whether any reweighting with the same weight distribution helps. Note
-explicitly that these controls establish *whether there is signal*, not *whether the
-signal is generality* — only the Phase 3 audit can do the latter.
-
----
-
-## Why this yields a publishable result under every outcome
-
-| Scenario | The paper |
-|---|---|
-| Everything validates (2-A, 3 survives, 4 Δ\*>0, 5 positive) | *"A validated generality signal for VLAs, with behavioural and cross-model grounding, and a training method that exploits it."* |
-| Labels sound, aggregation fails (2-A, 3 dissolves) | *"Generality is a feature-level property that does not survive aggregation — here is the mechanism, the audit tooling, and the level at which intervention must occur."* |
-| Classifier does not transfer (2-C) | *"Interpretability classifiers with borrowed coefficients do not transfer across SAE fits or models — diagnosis and recommended practice."* |
-| Seed-unstable (4.1 varies) | *"SAE non-identifiability dominates feature-level generality analysis; single-fit conclusions are unreliable."* |
-| Construct ill-posed (2-D) | *"The general/memorized dichotomy is not reliably annotatable at this resolution."* |
-| Behavioural link holds (5 positive) regardless of 3 | *"Memorized-feature reliance predicts VLA transfer failure"* — strongest single claim available |
-
-The common thread in every row: **a measurement-validity contribution plus reusable
-tooling.** That is what makes the outcome irrelevant to publishability.
-
----
-
-## Execution order and dependencies
-
-```
-Phase 0  (now, on existing codes)          ── gate ──┐
-Phase 1  (activation collection + SAEs)              │
-   ├─ 1.2 config decision  ← blocks SAE training     │
-   └─ 1.3 seeds (≥2)                                 │
-Phase 2  (feature level)  ← needs 1                  │
-   ├─ 2.1 apply paper β                              │
-   └─ 2.2 hand-label + refit  ← the key experiment   │
-Phase 3  (episode → frame)  ← needs 2                │
-Phase 4  (seeds, cross-model)  ← needs 1.3, 1.4      │  ─ runs parallel to 3
-Phase 5  (attribution + cross-suite)  ← needs 1      │  ─ runs parallel to 3, 4
-Phase 6  (intervention)  ← conditional on 3 or 5
-```
-
-Phases 3, 4 and 5 are mutually independent and should be run in parallel. Phase 5's
-attribution gate (§5.1) should be tested **early** because it is cheap and it determines
-whether the highest-ceiling result is available at all.
-
----
-
-## Analysis commitments (fixed in advance)
-
-1. **Report all layers and all seeds**, not a selected subset.
-2. **Pre-specified thresholds:** confound-dominated if OLS R² ≥ 0.8; residual accepted as
-   a stable trait only if even/odd r_SB ≥ 0.5 **and** first/second ICC > 0 (the second
-   condition guards the forced-anticorrelation artifact — when the confound model fits
-   well, half-residuals are algebraically forced toward r = −1).
-3. **Report the noise floor** alongside every cross-fit or cross-model comparison.
-4. **Report inter-annotator agreement** for any hand-labelling.
-5. **No outcome-dependent metric switching.** If a metric is changed after seeing results,
+1. **Report all layers, all seeds, all four suites** — never a selected subset.
+2. **Every score must beat base firing rate.** Report the base-rate-partial correlation
+   alongside every raw correlation. A score that does not survive the control is reported
+   as null (as in §2.2).
+3. **Report the noise floor** (same-model/different-seed) beside every cross-model number.
+4. **Distinguish "could not measure" from "not there"** in every null.
+5. **No outcome-dependent metric switching.** If a metric changes after seeing results,
    report both.
-6. **Distinguish "we could not measure it" from "it is not there"** in every null.
+6. **Keep the firing metrics as descriptors only** — they may characterise features
+   (clocks, burstiness) but are never reported as the generality measure.
+
+---
+
+## Appendix — what changed from the original pre-registration
+
+The original plan (git history) was a faithful **replication** of the paper's classifier,
+with hand-labelling (its Phase 2) as "the single most valuable experiment." That plan is
+superseded because:
+
+- **Hand-labelling is out** — it can only capture human-semantic generality, and we
+  redefined generality functionally (§1). It is no longer the ground truth.
+- **The firing-metric family is out** as a generality measure — shown to be base rate
+  (§2.2). It survives only as description.
+- **Generality is now two axes** (breadth × invariance), continuous, not the paper's
+  binary.
+- **Validation moved to non-firing targets** (recurrence, causal attribution, behaviour),
+  each gated by the confound-first control that the original plan named but had not yet
+  been forced to apply.
+
+The through-line is unchanged: a measurement-validity contribution plus reusable tooling,
+publishable under every outcome.
