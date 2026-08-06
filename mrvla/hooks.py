@@ -14,10 +14,14 @@ class ActionPositionCollector:
     ActivationCollector produces. We register a forward hook on a single decoder layer
     (layer 31) and keep the last position of every DECODE call.
 
-    OpenVLA's predict_action calls generate(max_new_tokens=7) with KV caching on, so the
-    forward passes are: one prefill (sequence length S > 1) followed by 7 decode passes
-    (sequence length 1 each). We capture the single new position on the length-1 passes,
-    giving exactly 7 residual vectors per decision, in emission order.
+    OpenVLA's predict_action calls generate(max_new_tokens=7). Crucially, the FIRST action
+    token is emitted by the prefill pass (its last-position logits), and the remaining 6 by
+    decode passes -- so generate makes exactly 7 forward passes, one per action token, and
+    the residual that produced action token i is the LAST position of pass i. We therefore
+    capture the last position of EVERY pass, giving 7 residuals in emission order. (This
+    also makes the collector robust to use_cache: cached decode passes have length 1,
+    uncached passes reprocess a growing sequence, but the last position is the new token in
+    both cases.)
 
     Usage per decision:
         collector.reset()
@@ -33,9 +37,9 @@ class ActionPositionCollector:
 
     def _hook(self, _module, _inputs, output):
         hidden = output[0] if isinstance(output, tuple) else output   # [B, S, d]
-        # Decode passes process exactly one new position (KV cache on). Prefill has S>1.
-        if hidden.shape[1] == 1:
-            self._buf.append(hidden[:, -1, :].detach().float().to(self.dtype).cpu())
+        # Last position of every pass: prefill's last position emits action token 1,
+        # each decode pass emits the next. Reset() before each generate isolates the 7.
+        self._buf.append(hidden[:, -1, :].detach().float().to(self.dtype).cpu())
 
     def reset(self) -> None:
         self._buf = []
@@ -51,9 +55,10 @@ class ActionPositionCollector:
         out = mats[:, 0, :].numpy()
         if expected is not None and out.shape[0] != expected:
             raise RuntimeError(
-                f"captured {out.shape[0]} decode positions, expected {expected}. "
-                f"If generate() reprocesses the full sequence (use_cache=False) the "
-                f"length-1 heuristic breaks -- ensure caching is on.")
+                f"captured {out.shape[0]} forward passes, expected {expected}. "
+                f"generate(max_new_tokens={expected}) should make exactly {expected} "
+                f"passes (1 prefill + {expected - 1} decode); did reset() run and were "
+                f"there no extra forward passes between reset and stack?")
         return out
 
     def remove(self) -> None:
