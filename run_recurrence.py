@@ -158,6 +158,15 @@ def main() -> None:
                 act = rep["is_active"]
                 s["q_perm_mean"] = float(np.nanmean(q_perm[act])) if act.any() else float("nan")
                 s["q_gap_mean"] = s["q_cross_mean"] - s["q_perm_mean"]
+                # chance-corrected retention: q_cross and q_seed both carry the same
+                # best-of-F floor, so subtract it from both before the ratio. This is
+                # the fraction of the ABOVE-CHANCE achievable matching that survives
+                # changing the model -- a cleaner number than raw q_cross/q_seed.
+                if "q_seed" in rep:
+                    num = rep["q_cross"][act] - q_perm[act]
+                    den = rep["q_seed"][act] - q_perm[act]
+                    cc = np.where(den > 1e-6, num / den, np.nan)
+                    s["retention_chance_corrected"] = float(np.nanmean(cc))
 
             inh_corr = None
             if base_acts is not None:
@@ -190,6 +199,8 @@ def main() -> None:
                 _qs = rep["q_seed"][rep["is_active"]]
                 _qsm = float(np.nanmean(_qs)) if _qs.size else float("nan")
                 ret_str = f"  q_seed={_qsm:.3f}  retention={s['retention_mean']:.3f}"
+                if "retention_chance_corrected" in s:
+                    ret_str += f"  ret_cc={s['retention_chance_corrected']:.3f}"
             print(f"  target={target:9s}  active={s['n_active']:4d}  "
                   f"q_cross mean={s['q_cross_mean']:.3f} median={s['q_cross_median']:.3f}"
                   + gap_str
