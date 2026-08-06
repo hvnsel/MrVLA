@@ -216,21 +216,77 @@ retrain. Cheapest path to a first non-firing generality signal.
 
 ### 3.2 Path A — Causal task-breadth (attribution) *(gated; needs rebuild)*
 
-**Definition operationalised.** Feature *j*'s contribution to the emitted action:
-`φ_tj = z_tj · ⟨w_j^dec, u_{d*}⟩` (fired × alignment with the action readout). Aggregate
-to per-task causal importance `C_j(g)`, normalise across tasks, and score generality as
-the **participation ratio** `(Σ_g C_j(g))² / Σ_g C_j(g)²` = *effective number of tasks
-the feature drives* (1 = memorized, 10 = maximally general). Immune to busyness: a
-feature can fire hard and contribute `φ ≈ 0`.
+**Status: GO (2026-08). Scope: gate-first, layer 31 only.** We commit to A1–A3 (collect,
+retrain, gate) because they are a prefix of every larger scope and waste nothing; A4
+(metric) and A5 (behavioural) are built only if the gate passes. Layer 31 only, because
+the linear decomposition below is exact only where the residual feeds the readout
+directly; earlier layers need gradient/path-patching (a separate decision). See the full
+design doc for the from-scratch derivation.
 
-**Viability gate (run before building):**
-- **L0** — have action-position residuals + head? *(Currently NO — §2.3.)*
-- **L1** — feed the SAE reconstruction `ĥ` through the real action head; does it
-  **re-decode to the same action** (≥ ~85–90% of decisions)? Go/no-go.
-- **L2** — does the linear (frozen-norm) attribution track the true logits?
+**Definition operationalised.** OpenVLA emits an action token by `logit(t) = RMSNorm(h)·u_t`
+at the action position — a dot product, hence additive. With the SAE writing
+`h ≈ l2·(Σ_j z_j w_j) + μ·1 + b_pre`, feature *j*'s contribution to the emitted token *t* is
 
-**Cost:** re-collect un-pooled L31 action-position residuals + log actions/logits;
-retrain an SAE on them. Deferred until B reports.
+  `φ_j = (l2 / r) · z_j · ⟨ w_j , g ⊙ u_contrast ⟩`,  where `r = rms(h)`, `g` = final-norm
+  gain, `u_contrast = u_t − mean_s u_s` over the 256 action tokens.
+
+Two implementation points that a naive `φ = z·⟨w,u⟩` gets wrong: (i) carry the **per-sample
+`l2` factor** (our SAE normalises each sample), and (ii) attribute to the **contrast**
+`u_contrast` not the raw `u_t`, so directions that lift all action logits equally get no
+credit. This escapes the activity confound: a feature can fire hard (`z_j` large) yet have
+`⟨w_j, g⊙u_contrast⟩ ≈ 0` and contribute nothing.
+
+Aggregate to per-task causal importance `C_j(g) = mean over task-g decisions of |φ_j|`, then
+score generality as the **participation ratio** `PR_j = (Σ_g C_j(g))² / Σ_g C_j(g)²` =
+*effective number of tasks the feature drives* (1 = memorized, G = maximally general).
+PR is scale-free, so it measures breadth, not strength.
+
+**Data contract (what A1 must collect).** Per decision (episode, timestep, one of 7 action
+slots): the un-pooled L31 residual `h` at the action-token position; the emitted token id;
+`r = rms(h)` (or enough to recompute it). Once per model: the unembedding `W_U` [V×d], the
+final-norm gain `g` [d] and eps. The SAE (retrained in A2) then supplies `z, w_j, l2, μ`.
+
+**Viability gate (run before building A4).**
+- **L0** — do we have action-position residuals + head? *Currently NO (§2.3) → A1 fixes it.*
+- **L1** — feed the SAE reconstruction `ĥ` through the real frozen RMSNorm + unembedding;
+  does its argmax over the 256 action tokens match the true model's? **Pass ≥ 0.85**; also
+  report true-vs-reconstructed action-logit correlation (expect > 0.9).
+- **L2** — do the frozen-`r` per-feature `φ_j` sum back to the true logit? Report the
+  correlation and mean abs discrepancy; a poor value means RMSNorm nonlinearity is too
+  strong for a clean linear decomposition.
+
+**Confound controls on PR (non-negotiable, per commitment #2).** Rank-partial of PR against
+(a) total causal magnitude `Σ_g C_j(g)` and (b) base firing rate; plus leave-one-task-out
+prediction of held-out causal importance surviving both. `φ` contains `z_j`, so PR is not
+perfectly activity-independent — the defensible claim is that *among firing features* causal
+influence differs from firing frequency via the alignment term; the controls test it.
+
+**Decision rules.**
+
+| Outcome | Interpretation |
+|---|---|
+| Gate fails (L1) | SAE features do not linearly explain VLA action selection — a methods finding about SAE attribution in VLAs. Path A closes; Path B stands with its stated scope. |
+| Gate passes, PR survives controls | A causal generality measure; combine with Path B for the breadth×recurrence map. Strongest positive. |
+| Gate passes, PR collapses under controls | Causal breadth = magnitude/activity. Clean negative, same rigour as §2.2. |
+
+**Cost:** A1 re-collection ≈ original collection (7× vectors: ~7 action positions/timestep;
+~18 GB at L31 for 4 models); A2 = 4 SAE retrains (L31 only); A3 cheap. **The honest risk:**
+the gate can fail after A1+A2 are paid for.
+
+### 3.2a Path A5 — behavioural (conditional on the gate)
+
+Define per decision `μ_t = Σ_{j not general} |φ_j| / Σ_j |φ_j|` (fraction of the decision
+carried by non-general features), then run **closed-loop rollouts on held-out suites**,
+logging `μ_t` with success/failure. **Design constraint against reverse causation:** measure
+`μ_t` **early in the episode, before any divergence**, and test whether early `μ_t` predicts
+eventual failure — otherwise `μ_t` may just be the policy noticing it is already in trouble.
+Control for scene/task novelty (a third-variable confound). The **causal** upgrade uses the
+existing `ActivationAblator` (`hooks.py`): project out high-`μ` features mid-forward-pass and
+test whether held-out success *improves*. Correlation → "reliance on non-transferring
+features predicts brittleness"; ablation-improves → "…and removing it helps" (the actual
+explanation). Note vs. prior brittleness accounts (data scarcity, covariate shift, shortcut
+learning, compositional/ grounding failures): those are behavioural/data-level; this is a
+*mechanistic, internal, per-decision* instantiation of the shortcut-learning hypothesis.
 
 ### 3.3 Axis 2 — Invariance (representational) *(existing data)*
 
