@@ -6,6 +6,64 @@ import numpy as np
 import torch
 
 
+class ActionPositionCollector:
+    """Capture the un-pooled residual at each ACTION-TOKEN position during decoding.
+
+    Path A (EXPERIMENT_PLAN.md §3.2) needs the layer-31 residual at the positions where
+    the 7 action tokens are generated -- NOT the mean-pooled prefill summary that
+    ActivationCollector produces. We register a forward hook on a single decoder layer
+    (layer 31) and keep the last position of every DECODE call.
+
+    OpenVLA's predict_action calls generate(max_new_tokens=7) with KV caching on, so the
+    forward passes are: one prefill (sequence length S > 1) followed by 7 decode passes
+    (sequence length 1 each). We capture the single new position on the length-1 passes,
+    giving exactly 7 residual vectors per decision, in emission order.
+
+    Usage per decision:
+        collector.reset()
+        <run generate>
+        h7 = collector.stack()          # [7, d] float, one row per action token
+    """
+
+    def __init__(self, layer_module: torch.nn.Module,
+                 dtype: torch.dtype = torch.float16):
+        self.dtype = dtype
+        self._buf: list[torch.Tensor] = []
+        self._handle = layer_module.register_forward_hook(self._hook)
+
+    def _hook(self, _module, _inputs, output):
+        hidden = output[0] if isinstance(output, tuple) else output   # [B, S, d]
+        # Decode passes process exactly one new position (KV cache on). Prefill has S>1.
+        if hidden.shape[1] == 1:
+            self._buf.append(hidden[:, -1, :].detach().float().to(self.dtype).cpu())
+
+    def reset(self) -> None:
+        self._buf = []
+
+    def stack(self, expected: int | None = 7) -> np.ndarray:
+        """Return [n_decode, d] for batch size 1. Errors if not `expected` positions."""
+        if not self._buf:
+            raise RuntimeError("ActionPositionCollector captured no decode positions. "
+                               "Is KV caching enabled and did generate() run?")
+        mats = torch.stack(self._buf, dim=0)          # [n_decode, B, d]
+        if mats.shape[1] != 1:
+            raise RuntimeError(f"expected batch size 1, got {mats.shape[1]}")
+        out = mats[:, 0, :].numpy()
+        if expected is not None and out.shape[0] != expected:
+            raise RuntimeError(
+                f"captured {out.shape[0]} decode positions, expected {expected}. "
+                f"If generate() reprocesses the full sequence (use_cache=False) the "
+                f"length-1 heuristic breaks -- ensure caching is on.")
+        return out
+
+    def remove(self) -> None:
+        self._handle.remove()
+
+    def __enter__(self): return self
+
+    def __exit__(self, *exc): self.remove()
+
+
 class ActivationCollector:
     """Registers forward hooks on selected decoder layers and pools activations.
 
