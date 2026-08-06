@@ -114,6 +114,60 @@ positions** + the action head. Existing activations are **mean-pooled + prefill-
 residuals at L31, log actions/logits, retrain an SAE on them). Recorded so we do not
 re-discover it.
 
+### 2.4 Path B is a positive result: recurrence is a real generality signal (2026-08)
+
+Cross-model recurrence (§3.1) was executed in full and **passed every control**, on the
+shared 1000-frame probe across all 4 fine-tuned models x 5 layers (20 cells):
+
+- **Above chance.** `gap = q_cross - q_perm` is **+0.13 to +0.26 in all 20 cells**
+  (`q_cross` ~0.37-0.54 vs a permutation floor ~0.24-0.28). The permutation null shuffles
+  probe-frame order, preserving each feature's marginals *and* the best-of-2048 maximum,
+  so it is the correct chance baseline for max-matching.
+- **Not activity, not inheritance.** `conf_R2` (rank(q_cross) regressed on
+  rank(base_rate) + rank(inheritance)) is **0.001-0.113**, i.e. **89-99.9% of the
+  recurrence ranking is explained by neither confound**. Inheritance is measured by
+  pushing *base-model* residuals through each fine-tuned SAE (no base SAE needed).
+- **Discriminating.** q_cross spreads from ~0.27 (10th pct) to ~0.69 (90th pct), so
+  recurrence separates features rather than scoring them alike. This is also the answer
+  to "the 4 models share a base checkpoint": mere network similarity would make all
+  features recur equally.
+- **Calibrated.** With a second-seed SAE (`--seed 1`) for the goal model, chance-corrected
+  retention `ret_cc = mean(q_cross - q_perm) / mean(q_seed - q_perm)` is a stable
+  **0.587 / 0.619 / 0.635 / 0.585 / 0.473** at L0/8/16/24/31. Changing the entire
+  fine-tuning suite costs only ~40% relative to merely changing the SAE seed.
+
+Structure: above-chance recurrence peaks mid-network (L8-L16) and is lowest at the output
+layer L31 — which is simultaneously the *purest* (conf_R2 ~0, essentially no inheritance).
+
+**Decision-rule outcome: row 1** of §3.1 (`Δ* > 0`, resolvable above the noise floor).
+Row 3 (noise floor unresolvable) is ruled out: `q_seed` ~0.53-0.66, well above the ~0.25
+chance floor.
+
+### 2.5 Two findings the plan did not anticipate (2026-08)
+
+**(a) SAE dictionaries are only ~60% reproducible across seeds.** Matching the goal
+model's SAE against a second SAE trained on the *same* activations with a different seed
+gives `q_seed` = **0.640 / 0.657 / 0.629 / 0.612 / 0.531** (L0/8/16/24/31), not ~1.0. Even
+the same model re-analysed does not perfectly re-find its own features. This is a
+standalone methods result: any conclusion from a single SAE fit inherits that
+instability, and reported feature indices should be read in that light. It also supplies
+the reliability estimate used in (b).
+
+**(b) Recurrence and the paper's `P(general)` are essentially uncorrelated.** Computed on
+the same SAE and feature indices, `spearman(q_cross, P_general)` lies in **-0.17 to
++0.17** across all 20 cells; top-100 overlap is 3-5x chance but with no overall
+relationship. **This null survives correction for measurement reliability:** with
+reliability ~0.6 the disattenuation factor is ~1.3, lifting the largest magnitude to
+~0.22 — still negligible. So the paper's coverage/burstiness score tells you almost
+nothing about whether an independently fine-tuned model rediscovers a feature. Given
+§2.2 (that score is base rate), this is arguably the project's headline claim and had no
+section in the plan.
+
+**Outstanding commitment.** §3.1 step 3 requires reporting **greedy and Hungarian**
+assignment; only greedy has been run at scale. Hungarian is implemented and needs no
+re-encoding. Similarly the second seed exists for **goal only**; §3.1 asks for >=2 seeds
+per (model, layer).
+
 ---
 
 ## 3. Method: measuring generality without firing and without labels
@@ -121,7 +175,7 @@ re-discover it.
 Generality must be validated against a target that is **not firing rate**. Three such
 targets; every one keeps the confound-first discipline (must beat base rate).
 
-### 3.1 Path B — Cross-model recurrence **(NEXT — chosen 2026-08)**
+### 3.1 Path B — Cross-model recurrence **(DONE 2026-08 — positive; see §2.4)**
 
 **Idea.** A feature is general to the degree the model **rediscovers it when
 independently fine-tuned on a different task suite.** Recurrence is the generality
@@ -162,21 +216,77 @@ retrain. Cheapest path to a first non-firing generality signal.
 
 ### 3.2 Path A — Causal task-breadth (attribution) *(gated; needs rebuild)*
 
-**Definition operationalised.** Feature *j*'s contribution to the emitted action:
-`φ_tj = z_tj · ⟨w_j^dec, u_{d*}⟩` (fired × alignment with the action readout). Aggregate
-to per-task causal importance `C_j(g)`, normalise across tasks, and score generality as
-the **participation ratio** `(Σ_g C_j(g))² / Σ_g C_j(g)²` = *effective number of tasks
-the feature drives* (1 = memorized, 10 = maximally general). Immune to busyness: a
-feature can fire hard and contribute `φ ≈ 0`.
+**Status: GO (2026-08). Scope: gate-first, layer 31 only.** We commit to A1–A3 (collect,
+retrain, gate) because they are a prefix of every larger scope and waste nothing; A4
+(metric) and A5 (behavioural) are built only if the gate passes. Layer 31 only, because
+the linear decomposition below is exact only where the residual feeds the readout
+directly; earlier layers need gradient/path-patching (a separate decision). See the full
+design doc for the from-scratch derivation.
 
-**Viability gate (run before building):**
-- **L0** — have action-position residuals + head? *(Currently NO — §2.3.)*
-- **L1** — feed the SAE reconstruction `ĥ` through the real action head; does it
-  **re-decode to the same action** (≥ ~85–90% of decisions)? Go/no-go.
-- **L2** — does the linear (frozen-norm) attribution track the true logits?
+**Definition operationalised.** OpenVLA emits an action token by `logit(t) = RMSNorm(h)·u_t`
+at the action position — a dot product, hence additive. With the SAE writing
+`h ≈ l2·(Σ_j z_j w_j) + μ·1 + b_pre`, feature *j*'s contribution to the emitted token *t* is
 
-**Cost:** re-collect un-pooled L31 action-position residuals + log actions/logits;
-retrain an SAE on them. Deferred until B reports.
+  `φ_j = (l2 / r) · z_j · ⟨ w_j , g ⊙ u_contrast ⟩`,  where `r = rms(h)`, `g` = final-norm
+  gain, `u_contrast = u_t − mean_s u_s` over the 256 action tokens.
+
+Two implementation points that a naive `φ = z·⟨w,u⟩` gets wrong: (i) carry the **per-sample
+`l2` factor** (our SAE normalises each sample), and (ii) attribute to the **contrast**
+`u_contrast` not the raw `u_t`, so directions that lift all action logits equally get no
+credit. This escapes the activity confound: a feature can fire hard (`z_j` large) yet have
+`⟨w_j, g⊙u_contrast⟩ ≈ 0` and contribute nothing.
+
+Aggregate to per-task causal importance `C_j(g) = mean over task-g decisions of |φ_j|`, then
+score generality as the **participation ratio** `PR_j = (Σ_g C_j(g))² / Σ_g C_j(g)²` =
+*effective number of tasks the feature drives* (1 = memorized, G = maximally general).
+PR is scale-free, so it measures breadth, not strength.
+
+**Data contract (what A1 must collect).** Per decision (episode, timestep, one of 7 action
+slots): the un-pooled L31 residual `h` at the action-token position; the emitted token id;
+`r = rms(h)` (or enough to recompute it). Once per model: the unembedding `W_U` [V×d], the
+final-norm gain `g` [d] and eps. The SAE (retrained in A2) then supplies `z, w_j, l2, μ`.
+
+**Viability gate (run before building A4).**
+- **L0** — do we have action-position residuals + head? *Currently NO (§2.3) → A1 fixes it.*
+- **L1** — feed the SAE reconstruction `ĥ` through the real frozen RMSNorm + unembedding;
+  does its argmax over the 256 action tokens match the true model's? **Pass ≥ 0.85**; also
+  report true-vs-reconstructed action-logit correlation (expect > 0.9).
+- **L2** — do the frozen-`r` per-feature `φ_j` sum back to the true logit? Report the
+  correlation and mean abs discrepancy; a poor value means RMSNorm nonlinearity is too
+  strong for a clean linear decomposition.
+
+**Confound controls on PR (non-negotiable, per commitment #2).** Rank-partial of PR against
+(a) total causal magnitude `Σ_g C_j(g)` and (b) base firing rate; plus leave-one-task-out
+prediction of held-out causal importance surviving both. `φ` contains `z_j`, so PR is not
+perfectly activity-independent — the defensible claim is that *among firing features* causal
+influence differs from firing frequency via the alignment term; the controls test it.
+
+**Decision rules.**
+
+| Outcome | Interpretation |
+|---|---|
+| Gate fails (L1) | SAE features do not linearly explain VLA action selection — a methods finding about SAE attribution in VLAs. Path A closes; Path B stands with its stated scope. |
+| Gate passes, PR survives controls | A causal generality measure; combine with Path B for the breadth×recurrence map. Strongest positive. |
+| Gate passes, PR collapses under controls | Causal breadth = magnitude/activity. Clean negative, same rigour as §2.2. |
+
+**Cost:** A1 re-collection ≈ original collection (7× vectors: ~7 action positions/timestep;
+~18 GB at L31 for 4 models); A2 = 4 SAE retrains (L31 only); A3 cheap. **The honest risk:**
+the gate can fail after A1+A2 are paid for.
+
+### 3.2a Path A5 — behavioural (conditional on the gate)
+
+Define per decision `μ_t = Σ_{j not general} |φ_j| / Σ_j |φ_j|` (fraction of the decision
+carried by non-general features), then run **closed-loop rollouts on held-out suites**,
+logging `μ_t` with success/failure. **Design constraint against reverse causation:** measure
+`μ_t` **early in the episode, before any divergence**, and test whether early `μ_t` predicts
+eventual failure — otherwise `μ_t` may just be the policy noticing it is already in trouble.
+Control for scene/task novelty (a third-variable confound). The **causal** upgrade uses the
+existing `ActivationAblator` (`hooks.py`): project out high-`μ` features mid-forward-pass and
+test whether held-out success *improves*. Correlation → "reliance on non-transferring
+features predicts brittleness"; ablation-improves → "…and removing it helps" (the actual
+explanation). Note vs. prior brittleness accounts (data scarcity, covariate shift, shortcut
+learning, compositional/ grounding failures): those are behavioural/data-level; this is a
+*mechanistic, internal, per-decision* instantiation of the shortcut-learning hypothesis.
 
 ### 3.3 Axis 2 — Invariance (representational) *(existing data)*
 
@@ -199,19 +309,26 @@ strongest possible claim; it depends on the Path-A rebuild + gate passing.
 ## 4. Execution order
 
 ```
-NOW  →  Path B: cross-model recurrence            (existing artifacts; verify seeds)
-          └─ confound controls: base rate, shared-base noise floor (Δ*)
-THEN →  Axis 2: invariance                        (existing data + confound_audit)
-          └─ assemble breadth×invariance quadrant map
-IF B/committing to causal claim:
-        Path A rebuild: re-collect action-position residuals + retrain SAE
-          └─ viability gate (L0→L2)  ← go/no-go
+DONE →  Path B: cross-model recurrence            → POSITIVE (§2.4)
+          └─ controls: permutation null, base rate, inheritance, seed noise floor
+          └─ unplanned findings: SAE seed-reproducibility ~60%; recurrence vs
+             P(general) uncorrelated (§2.5)
+
+NOW  →  Path A rebuild: re-collect action-position residuals + retrain SAE
+          └─ viability gate (L0→L2)  ← go/no-go, run BEFORE building the metric
           └─ participation-ratio task-breadth score
         Behavioral: reliance vs cross-suite success   (needs A)
+
+BACKLOG (cheap, on existing artifacts, no retraining):
+        - Hungarian assignment at scale (unmet §3.1 step-3 commitment)
+        - second SAE seed for spatial / object / libero10 (§3.1 asks for >=2 per model)
+        - characterise the top-recurrence features (the §3.1 positive-outcome follow-up)
+        - Axis 2: invariance → breadth×invariance quadrant map
 ```
 
-Path B is the immediate work. Path A's rebuild is only funded if we want the causal /
-behavioral claim after seeing B.
+Path B is complete and positive, so the Path A rebuild is now funded: it is the only
+route to the causal and behavioural claims, and the only way to lift the mean-pooled
+prefill limitation (§2.3) that bounds what Path B's result can mean.
 
 ---
 
