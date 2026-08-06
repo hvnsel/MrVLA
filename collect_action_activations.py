@@ -39,14 +39,22 @@ from mrvla.model_utils import build_inputs, load_openvla, locate_decoder_layers
 # Head constants (once per model)
 # ---------------------------------------------------------------------------
 def export_head_constants(model, out_dir: str, n_bins: int = 256) -> dict:
-    """Save the unembedding action rows, final-norm gain, and eps. Returns a summary."""
-    lm_head = model.get_output_embeddings()                       # Linear(d -> V), no bias
-    W_U = lm_head.weight.detach().float().cpu().numpy()           # [V, d]
-    V = W_U.shape[0]
-    # OpenVLA action tokens are the last n_bins vocab ids: token_id = V - bin_index,
-    # bin_index in [1, n_bins], so ids are {V-n_bins, ..., V-1}. Row r <-> id V-n_bins+r.
-    W_U_act = W_U[V - n_bins:V]                                   # [n_bins, d]
-    act_ids = np.arange(V - n_bins, V, dtype=np.int64)
+    """Save the unembedding action rows, final-norm gain, and eps. Returns a summary.
+
+    CAREFUL with the action-token range. The lm_head has V_full rows (32064 =
+    32000 + pad_to_multiple_of), but OpenVLA decodes actions with
+    ``self.vocab_size = text_config.vocab_size - pad_to_multiple_of`` (= 32000), via
+    ``token_id = self.vocab_size - bin_index``, bin_index in [1, n_bins]. So the action
+    tokens are ids {A - n_bins, ..., A - 1} where A = model.vocab_size (32000), NOT the
+    last rows of the lm_head. Using V_full here would select the wrong 256 rows (off by
+    pad_to_multiple_of) and every attribution would be wrong.
+    """
+    lm_head = model.get_output_embeddings()                       # Linear(d -> V_full)
+    W_U = lm_head.weight.detach().float().cpu().numpy()           # [V_full, d]
+    V_full = W_U.shape[0]
+    A = int(model.vocab_size)                                     # action vocab (32000)
+    W_U_act = W_U[A - n_bins:A]                                   # [n_bins, d], ids A-256..A-1
+    act_ids = np.arange(A - n_bins, A, dtype=np.int64)
 
     # Final RMSNorm: language_model.model.norm (Llama). Fall back to a search.
     norm = None
@@ -65,9 +73,10 @@ def export_head_constants(model, out_dir: str, n_bins: int = 256) -> dict:
     path = os.path.join(out_dir, "head_constants.npz")
     np.savez_compressed(path, W_U_act=W_U_act.astype(np.float32),
                         act_ids=act_ids, g=g.astype(np.float32),
-                        eps=np.float32(eps), vocab_size=np.int64(V),
-                        n_bins=np.int64(n_bins))
-    return {"path": path, "vocab_size": V, "d": int(W_U.shape[1]),
+                        eps=np.float32(eps), action_vocab=np.int64(A),
+                        lm_head_vocab=np.int64(V_full), n_bins=np.int64(n_bins))
+    return {"path": path, "action_vocab": A, "lm_head_vocab": V_full,
+            "action_token_ids": [int(A - n_bins), int(A - 1)], "d": int(W_U.shape[1]),
             "n_action_tokens": int(n_bins), "eps": eps}
 
 
