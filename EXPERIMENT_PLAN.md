@@ -114,6 +114,60 @@ positions** + the action head. Existing activations are **mean-pooled + prefill-
 residuals at L31, log actions/logits, retrain an SAE on them). Recorded so we do not
 re-discover it.
 
+### 2.4 Path B is a positive result: recurrence is a real generality signal (2026-08)
+
+Cross-model recurrence (§3.1) was executed in full and **passed every control**, on the
+shared 1000-frame probe across all 4 fine-tuned models x 5 layers (20 cells):
+
+- **Above chance.** `gap = q_cross - q_perm` is **+0.13 to +0.26 in all 20 cells**
+  (`q_cross` ~0.37-0.54 vs a permutation floor ~0.24-0.28). The permutation null shuffles
+  probe-frame order, preserving each feature's marginals *and* the best-of-2048 maximum,
+  so it is the correct chance baseline for max-matching.
+- **Not activity, not inheritance.** `conf_R2` (rank(q_cross) regressed on
+  rank(base_rate) + rank(inheritance)) is **0.001-0.113**, i.e. **89-99.9% of the
+  recurrence ranking is explained by neither confound**. Inheritance is measured by
+  pushing *base-model* residuals through each fine-tuned SAE (no base SAE needed).
+- **Discriminating.** q_cross spreads from ~0.27 (10th pct) to ~0.69 (90th pct), so
+  recurrence separates features rather than scoring them alike. This is also the answer
+  to "the 4 models share a base checkpoint": mere network similarity would make all
+  features recur equally.
+- **Calibrated.** With a second-seed SAE (`--seed 1`) for the goal model, chance-corrected
+  retention `ret_cc = mean(q_cross - q_perm) / mean(q_seed - q_perm)` is a stable
+  **0.587 / 0.619 / 0.635 / 0.585 / 0.473** at L0/8/16/24/31. Changing the entire
+  fine-tuning suite costs only ~40% relative to merely changing the SAE seed.
+
+Structure: above-chance recurrence peaks mid-network (L8-L16) and is lowest at the output
+layer L31 — which is simultaneously the *purest* (conf_R2 ~0, essentially no inheritance).
+
+**Decision-rule outcome: row 1** of §3.1 (`Δ* > 0`, resolvable above the noise floor).
+Row 3 (noise floor unresolvable) is ruled out: `q_seed` ~0.53-0.66, well above the ~0.25
+chance floor.
+
+### 2.5 Two findings the plan did not anticipate (2026-08)
+
+**(a) SAE dictionaries are only ~60% reproducible across seeds.** Matching the goal
+model's SAE against a second SAE trained on the *same* activations with a different seed
+gives `q_seed` = **0.640 / 0.657 / 0.629 / 0.612 / 0.531** (L0/8/16/24/31), not ~1.0. Even
+the same model re-analysed does not perfectly re-find its own features. This is a
+standalone methods result: any conclusion from a single SAE fit inherits that
+instability, and reported feature indices should be read in that light. It also supplies
+the reliability estimate used in (b).
+
+**(b) Recurrence and the paper's `P(general)` are essentially uncorrelated.** Computed on
+the same SAE and feature indices, `spearman(q_cross, P_general)` lies in **-0.17 to
++0.17** across all 20 cells; top-100 overlap is 3-5x chance but with no overall
+relationship. **This null survives correction for measurement reliability:** with
+reliability ~0.6 the disattenuation factor is ~1.3, lifting the largest magnitude to
+~0.22 — still negligible. So the paper's coverage/burstiness score tells you almost
+nothing about whether an independently fine-tuned model rediscovers a feature. Given
+§2.2 (that score is base rate), this is arguably the project's headline claim and had no
+section in the plan.
+
+**Outstanding commitment.** §3.1 step 3 requires reporting **greedy and Hungarian**
+assignment; only greedy has been run at scale. Hungarian is implemented and needs no
+re-encoding. Similarly the second seed exists for **goal only**; §3.1 asks for >=2 seeds
+per (model, layer).
+
 ---
 
 ## 3. Method: measuring generality without firing and without labels
@@ -121,7 +175,7 @@ re-discover it.
 Generality must be validated against a target that is **not firing rate**. Three such
 targets; every one keeps the confound-first discipline (must beat base rate).
 
-### 3.1 Path B — Cross-model recurrence **(NEXT — chosen 2026-08)**
+### 3.1 Path B — Cross-model recurrence **(DONE 2026-08 — positive; see §2.4)**
 
 **Idea.** A feature is general to the degree the model **rediscovers it when
 independently fine-tuned on a different task suite.** Recurrence is the generality
@@ -199,19 +253,26 @@ strongest possible claim; it depends on the Path-A rebuild + gate passing.
 ## 4. Execution order
 
 ```
-NOW  →  Path B: cross-model recurrence            (existing artifacts; verify seeds)
-          └─ confound controls: base rate, shared-base noise floor (Δ*)
-THEN →  Axis 2: invariance                        (existing data + confound_audit)
-          └─ assemble breadth×invariance quadrant map
-IF B/committing to causal claim:
-        Path A rebuild: re-collect action-position residuals + retrain SAE
-          └─ viability gate (L0→L2)  ← go/no-go
+DONE →  Path B: cross-model recurrence            → POSITIVE (§2.4)
+          └─ controls: permutation null, base rate, inheritance, seed noise floor
+          └─ unplanned findings: SAE seed-reproducibility ~60%; recurrence vs
+             P(general) uncorrelated (§2.5)
+
+NOW  →  Path A rebuild: re-collect action-position residuals + retrain SAE
+          └─ viability gate (L0→L2)  ← go/no-go, run BEFORE building the metric
           └─ participation-ratio task-breadth score
         Behavioral: reliance vs cross-suite success   (needs A)
+
+BACKLOG (cheap, on existing artifacts, no retraining):
+        - Hungarian assignment at scale (unmet §3.1 step-3 commitment)
+        - second SAE seed for spatial / object / libero10 (§3.1 asks for >=2 per model)
+        - characterise the top-recurrence features (the §3.1 positive-outcome follow-up)
+        - Axis 2: invariance → breadth×invariance quadrant map
 ```
 
-Path B is the immediate work. Path A's rebuild is only funded if we want the causal /
-behavioral claim after seeing B.
+Path B is complete and positive, so the Path A rebuild is now funded: it is the only
+route to the causal and behavioural claims, and the only way to lift the mean-pooled
+prefill limitation (§2.3) that bounds what Path B's result can mean.
 
 ---
 
