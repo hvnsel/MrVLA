@@ -12,8 +12,9 @@ shared frame set) plus each fine-tuned model's SAE, and computes the Path-B sign
                     (inherited, not learned during fine-tuning).  No base SAE needed:
                     we push the base residual through the fine-tuned model's own SAE.
 
-No second SAE seed exists yet, so the seed noise floor / retention are not computed;
-q_cross gives a ranking, and inheritance is the reference we DO have.
+If --seed2-map supplies a second-seed SAE for a target model, the same-model noise
+floor (q_seed) and retention (q_cross / q_seed) are computed for that target; otherwise
+q_cross gives a ranking and inheritance is the reference we DO have.
 
 Usage
 -----
@@ -22,6 +23,7 @@ python run_recurrence.py \
     --sae-map goal=./sae/goal,spatial=./sae/spatial,object=./sae/object,libero10=./sae/libero10 \
     --base-key base \
     --layers 0,8,16,24,31 \
+    --seed2-map goal=./sae/goal_seed1 \
     --out ./recurrence_v1
 """
 
@@ -95,6 +97,9 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--probe-dir", required=True)
     p.add_argument("--sae-map", required=True, help="key=sae_dir pairs for fine-tuned models")
+    p.add_argument("--seed2-map", default=None,
+                   help="key=sae_dir pairs for a SECOND-seed SAE of the same model(s); "
+                        "enables the same-model noise floor (q_seed) and retention.")
     p.add_argument("--base-key", default="base", help="probe key for the base model (inheritance ref)")
     p.add_argument("--layers", default="0,8,16,24,31")
     p.add_argument("--out", required=True)
@@ -109,6 +114,7 @@ def main() -> None:
     device = args.device if torch.cuda.is_available() else "cpu"
     os.makedirs(args.out, exist_ok=True)
     sae_map = parse_map(args.sae_map)
+    seed2_map = parse_map(args.seed2_map) if args.seed2_map else {}
     layer_indices = [int(x) for x in args.layers.split(",") if x.strip()]
 
     manifest = json.load(open(os.path.join(args.probe_dir, "probe_manifest.json")))
@@ -133,10 +139,14 @@ def main() -> None:
         print(f"\n[rec] ===== layer {layer_idx} =====", flush=True)
         codes = {k: encode(acts[k][:, lp, :], sae_map[k], layer_idx, device, args.batch_size)
                  for k in ft_keys}
+        # second-seed codes of the target model, for the same-model noise floor
+        seed2_codes = {k: encode(acts[k][:, lp, :], seed2_map[k], layer_idx, device, args.batch_size)
+                       for k in ft_keys if k in seed2_map}
 
         layer_out = {}
         for target in ft_keys:
-            rep = recurrence_report(codes, target=target, method=args.method)
+            rep = recurrence_report(codes, target=target, method=args.method,
+                                    seed2=seed2_codes.get(target))
             s = summarize(rep)
 
             # permutation null: chance floor for the best-of-F max-matching
@@ -168,13 +178,22 @@ def main() -> None:
                 save["inheritance"] = inh
             if q_perm is not None:
                 save["q_perm"] = q_perm
+            if "q_seed" in rep:
+                save["q_seed"] = rep["q_seed"]
+                save["retention"] = rep["retention"]
             np.savez_compressed(
                 os.path.join(args.out, f"layer_{layer_idx:02d}_target_{target}.npz"), **save)
             gap_str = (f"  q_perm={s['q_perm_mean']:.3f}  gap={s['q_gap_mean']:+.3f}"
                        if q_perm is not None else "")
+            ret_str = ""
+            if "retention_mean" in s:
+                _qs = rep["q_seed"][rep["is_active"]]
+                _qsm = float(np.nanmean(_qs)) if _qs.size else float("nan")
+                ret_str = f"  q_seed={_qsm:.3f}  retention={s['retention_mean']:.3f}"
             print(f"  target={target:9s}  active={s['n_active']:4d}  "
                   f"q_cross mean={s['q_cross_mean']:.3f} median={s['q_cross_median']:.3f}"
                   + gap_str
+                  + ret_str
                   + f"  q~baserate={s['spearman_qcross_baserate']:+.3f}"
                   + (f"  q~inherit={inh_corr:+.3f}" if inh_corr is not None else ""),
                   flush=True)
