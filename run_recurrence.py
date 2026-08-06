@@ -162,11 +162,14 @@ def main() -> None:
                 # best-of-F floor, so subtract it from both before the ratio. This is
                 # the fraction of the ABOVE-CHANCE achievable matching that survives
                 # changing the model -- a cleaner number than raw q_cross/q_seed.
+                # Use the RATIO OF AGGREGATES, not the mean of per-feature ratios: an
+                # individual feature's (q_seed_j - q_perm_j) can be tiny, so per-feature
+                # ratios explode and their mean is unstable. The aggregate ratio is the
+                # robust population-level estimate.
                 if "q_seed" in rep:
-                    num = rep["q_cross"][act] - q_perm[act]
-                    den = rep["q_seed"][act] - q_perm[act]
-                    cc = np.where(den > 1e-6, num / den, np.nan)
-                    s["retention_chance_corrected"] = float(np.nanmean(cc))
+                    num = float(np.nanmean(rep["q_cross"][act] - q_perm[act]))
+                    den = float(np.nanmean(rep["q_seed"][act] - q_perm[act]))
+                    s["retention_chance_corrected"] = num / den if den > 1e-6 else float("nan")
 
             inh_corr = None
             if base_acts is not None:
