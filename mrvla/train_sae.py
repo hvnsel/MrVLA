@@ -74,6 +74,7 @@ DEFAULTS = dict(
     geo_median_samples=10_000,  # samples used to init b_pre
     dead_steps_threshold=500,   # steps before a latent is considered dead
     grad_clip=1.0,
+    seed=0,                     # controls W_dec init, geo/c_mse subsamples, batch order
 )
 
 
@@ -301,8 +302,18 @@ def train_one_layer(
     d = X.shape[1]
     n_features = max(1, int(d * cfg["expansion_ratio"]))
 
+    # Seed every source of randomness in this layer's training: W_dec init
+    # (torch.randn), the geometric-median / c_mse subsamples (torch.randperm) and the
+    # DataLoader batch order (shuffle=True).  Offset by the layer so different layers
+    # of one run don't share an identical init draw.  Training a second SAE with a
+    # different --seed is what makes the same-model noise floor measurable.
+    seed = int(cfg.get("seed", 0)) + 1000 * int(layer_idx)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     print(f"\n[SAE] layer {layer_idx} (pos {layer_pos}) | d={d} | n_features={n_features} "
-          f"| N={len(X):,} | device={device}")
+          f"| N={len(X):,} | device={device} | seed={cfg.get('seed', 0)}")
 
     model = TopKSAE(d, n_features, k=cfg["k"], k_aux=cfg["k_aux"],
                     dead_steps_threshold=cfg["dead_steps_threshold"]).to(device)
@@ -464,6 +475,10 @@ def parse_args():
     p.add_argument("--lr", type=float, default=DEFAULTS["lr"])
     p.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     p.add_argument("--epochs", type=int, default=DEFAULTS["epochs"])
+    p.add_argument("--seed", type=int, default=DEFAULTS["seed"],
+                   help="RNG seed for SAE init and batch order. Train a second SAE with "
+                        "a different seed to measure the same-model noise floor "
+                        "(SAE identifiability) for cross-model recurrence.")
     p.add_argument("--resume-from", default=None,
                    help="Optional path to a previous --out-dir; loads each layer's final.pt "
                         "and continues training to the new --epochs target. Skip layers "
@@ -492,6 +507,7 @@ def main():
         geo_median_samples=DEFAULTS["geo_median_samples"],
         dead_steps_threshold=DEFAULTS["dead_steps_threshold"],
         grad_clip=DEFAULTS["grad_clip"],
+        seed=args.seed,
     )
 
     # Determine which layers to train
