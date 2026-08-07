@@ -272,10 +272,31 @@ def main() -> None:
     active = mag > 0
 
     # ---------------- confound controls ------------------------------------
+    # Two confounds, and base rate is usually the bigger one: a feature that fires in
+    # more tasks has nonzero |phi| in more tasks -> higher PR mechanically. So we control
+    # PR against causal magnitude AND base firing rate, singly and TOGETHER.
     rho_mag = _spearman(PR[active], mag[active])
     rho_br = _spearman(PR[active], base_rate[active])
-    # leave-one-task-out: does PR on G-1 tasks predict held-out causal importance?
-    loto, loto_partial = [], []
+
+    def _partial2(y, x, c1, c2):
+        """Rank-partial of y on x controlling for BOTH c1 and c2 (residualise x and y on
+        the [c1,c2] rank plane, then correlate residuals)."""
+        m = np.isfinite(y) & np.isfinite(x) & np.isfinite(c1) & np.isfinite(c2)
+        if m.sum() < 5:
+            return float("nan")
+        def rk(v):
+            r = np.argsort(np.argsort(v[m])).astype(np.float64); return r - r.mean()
+        ry, rx, rc = rk(y), rk(x), np.stack([rk(c1), rk(c2)], axis=1)
+        # least-squares residualise rx and ry on the two control ranks
+        beta_x, *_ = np.linalg.lstsq(rc, rx, rcond=None)
+        beta_y, *_ = np.linalg.lstsq(rc, ry, rcond=None)
+        ex, ey = rx - rc @ beta_x, ry - rc @ beta_y
+        den = np.sqrt((ex * ex).sum() * (ey * ey).sum())
+        return float((ex * ey).sum() / den) if den > 0 else float("nan")
+
+    # leave-one-task-out: does PR on G-1 tasks predict held-out causal importance,
+    # beyond magnitude, beyond base rate, and beyond BOTH?
+    loto, loto_p_mag, loto_p_br, loto_p_both = [], [], [], []
     G = len(task_ids)
     for gi in range(G):
         keep = np.arange(G) != gi
@@ -283,9 +304,12 @@ def main() -> None:
         mag_tr = total_magnitude(C[keep])
         held = C[gi]
         m = (mag_tr > 0) & np.isfinite(PR_tr)
-        if m.sum() > 3:
+        if m.sum() > 4:
             loto.append(_spearman(PR_tr[m], held[m]))
-            loto_partial.append(_partial_spearman(PR_tr[m], held[m], mag_tr[m]))
+            loto_p_mag.append(_partial_spearman(PR_tr[m], held[m], mag_tr[m]))
+            loto_p_br.append(_partial_spearman(PR_tr[m], held[m], base_rate[m]))
+            loto_p_both.append(_partial2(held[m], PR_tr[m], mag_tr[m], base_rate[m]))
+    mean = lambda a: float(np.mean(a)) if a else float("nan")
     summary = {
         "n_decisions": n_total, "n_tasks": int(G), "n_features": int(F),
         "n_active": int(active.sum()),
@@ -294,8 +318,10 @@ def main() -> None:
         "PR_p90": float(np.nanpercentile(PR[active], 90)),
         "spearman_PR_vs_magnitude": rho_mag,
         "spearman_PR_vs_baserate": rho_br,
-        "loto_mean_spearman": float(np.mean(loto)) if loto else float("nan"),
-        "loto_mean_partial_vs_magnitude": float(np.mean(loto_partial)) if loto_partial else float("nan"),
+        "loto_mean_spearman": mean(loto),
+        "loto_mean_partial_vs_magnitude": mean(loto_p_mag),
+        "loto_mean_partial_vs_baserate": mean(loto_p_br),
+        "loto_mean_partial_vs_both": mean(loto_p_both),
         "gate": gate,
     }
     np.savez_compressed(os.path.join(args.out, f"layer_{args.layer:02d}_attribution.npz"),
@@ -310,12 +336,18 @@ def main() -> None:
     print(f"[attr] PR mean={summary['PR_mean']:.3f}  p10={summary['PR_p10']:.3f}  "
           f"p90={summary['PR_p90']:.3f}   (1 = one task, {G} = all tasks)")
     print(f"[attr] CONTROL  PR ~ causal magnitude : {rho_mag:+.3f}")
-    print(f"[attr] CONTROL  PR ~ base firing rate : {rho_br:+.3f}")
-    print(f"[attr] LOTO     PR -> held-out importance : {summary['loto_mean_spearman']:+.3f}"
-          f"   partial (magnitude removed): {summary['loto_mean_partial_vs_magnitude']:+.3f}")
-    print(f"\n[attr] Read: a POSITIVE partial LOTO means causal BREADTH predicts held-out\n"
-          f"[attr] causal importance beyond how strong the feature is overall -- i.e. task-\n"
-          f"[attr] breadth is a real axis, not a restatement of magnitude.", flush=True)
+    print(f"[attr] CONTROL  PR ~ base firing rate : {rho_br:+.3f}   "
+          f"(high = activity confound present)")
+    print(f"[attr] LOTO  PR -> held-out importance : raw={summary['loto_mean_spearman']:+.3f}")
+    print(f"[attr]   partial | magnitude : {summary['loto_mean_partial_vs_magnitude']:+.3f}")
+    print(f"[attr]   partial | base rate : {summary['loto_mean_partial_vs_baserate']:+.3f}")
+    print(f"[attr]   partial | BOTH      : {summary['loto_mean_partial_vs_both']:+.3f}   "
+          f"<- the decisive number")
+    print(f"\n[attr] Read: the 'partial | BOTH' is decisive. Positive => causal BREADTH\n"
+          f"[attr] predicts held-out causal importance beyond BOTH how strong the feature is\n"
+          f"[attr] AND how often it fires -- i.e. task-breadth is a real axis, not activity or\n"
+          f"[attr] magnitude in disguise. ~0 => it is one of those confounds (as firing was).",
+          flush=True)
 
 
 if __name__ == "__main__":
