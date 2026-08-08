@@ -352,6 +352,10 @@ def main() -> None:
             loto_p_br.append(_partial_spearman(PR_tr[m], held[m], base_rate[m]))
             loto_p_both.append(_partial2(held[m], PR_tr[m], mag_tr[m], base_rate[m]))
     mean = lambda a: float(np.mean(a)) if a else float("nan")
+    # per-fold robustness of the decisive number: a mean over folds can hide a
+    # few-big-many-negative split, so report sign consistency and the worst fold.
+    both_arr = np.array([v for v in loto_p_both if np.isfinite(v)])
+    both_n_pos = int((both_arr > 0).sum())
     summary = {
         "n_decisions": n_total, "n_tasks": int(G), "n_features": int(F),
         "n_active": int(active.sum()),
@@ -364,6 +368,11 @@ def main() -> None:
         "loto_mean_partial_vs_magnitude": mean(loto_p_mag),
         "loto_mean_partial_vs_baserate": mean(loto_p_br),
         "loto_mean_partial_vs_both": mean(loto_p_both),
+        "loto_partial_both_folds": [float(v) for v in loto_p_both],
+        "loto_partial_both_n_positive": both_n_pos,
+        "loto_partial_both_n_folds": int(both_arr.size),
+        "loto_partial_both_min": float(both_arr.min()) if both_arr.size else float("nan"),
+        "loto_partial_both_std": float(both_arr.std()) if both_arr.size else float("nan"),
         "gate": gate,
     }
     np.savez_compressed(os.path.join(args.out, f"layer_{args.layer:02d}_attribution.npz"),
@@ -385,6 +394,8 @@ def main() -> None:
     print(f"[attr]   partial | base rate : {summary['loto_mean_partial_vs_baserate']:+.3f}")
     print(f"[attr]   partial | BOTH      : {summary['loto_mean_partial_vs_both']:+.3f}   "
           f"<- the decisive number")
+    print(f"[attr]   partial | BOTH robustness: {both_n_pos}/{both_arr.size} folds positive, "
+          f"min={summary['loto_partial_both_min']:+.3f}, sd={summary['loto_partial_both_std']:.3f}")
     print(f"\n[attr] Read: the 'partial | BOTH' is decisive. Positive => causal BREADTH\n"
           f"[attr] predicts held-out causal importance beyond BOTH how strong the feature is\n"
           f"[attr] AND how often it fires -- i.e. task-breadth is a real axis, not activity or\n"
