@@ -19,8 +19,12 @@ python identify_features.py \
     --acts-dir /work/.../ACT_ACTION/goal \
     --sae-dir  /work/.../ACT_ACTION_SAE/goal/sae \
     --attr     /work/.../ATTR/goal_k100/layer_31_attribution.npz \
-    --layer 31 --top 8 --exemplars 12 \
+    --layer 31 --top 8 --exemplars 12 --per-task 10 \
     --out /work/.../FEATURES/goal_k100
+
+--per-task 10 keeps the top-10 exemplar decisions PER TASK per feature, so
+capture_feature_frames.py can lay a general feature out as a grid with 10 frames from every
+task (its cross-task signature), while a specialist shows filled rows for only its 1-2 tasks.
 """
 
 from __future__ import annotations
@@ -69,7 +73,10 @@ def main() -> None:
     p.add_argument("--attr", required=True, help="run_attribution's layer_NN_attribution.npz")
     p.add_argument("--layer", type=int, default=31)
     p.add_argument("--top", type=int, default=8, help="how many general + specialist features")
-    p.add_argument("--exemplars", type=int, default=12, help="exemplar decisions per feature")
+    p.add_argument("--exemplars", type=int, default=12, help="overall exemplar decisions per feature")
+    p.add_argument("--per-task", type=int, default=10,
+                   help="top-|phi| exemplar decisions to keep PER TASK per feature (for the "
+                        "per-task grid: a general feature shows this many from every task)")
     p.add_argument("--out", required=True)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--batch-size", type=int, default=4096)
@@ -115,18 +122,24 @@ def main() -> None:
     sel = np.array(selected, dtype=np.int64)
     W_dec_sel = W_dec[sel]                                                # [S, d]
 
-    # --- stream shards, keep top-|phi| and top-z per selected feature -------
-    # per selected-feature running lists of (score, task, episode, timestep, z, phi)
+    # --- stream shards, keep exemplars per selected feature -----------------
+    # For each selected feature we keep three running collections of records
+    # (score, task, episode, timestep, z, phi):
+    #   phi_ex[s]     -- overall top-|phi|            (compact view / specialists)
+    #   z_ex[s]       -- overall top-z                (what activates it)
+    #   pt_ex[s][g]   -- top-|phi| WITHIN task g      (the per-task grid; a general
+    #                    feature fills all G tasks, a specialist only 1-2)
     S = len(sel)
-    phi_ex = [[] for _ in range(S)]      # by |phi|
-    z_ex = [[] for _ in range(S)]        # by z
+    phi_ex = [[] for _ in range(S)]
+    z_ex = [[] for _ in range(S)]
+    pt_ex = [dict() for _ in range(S)]
     shards = sorted(glob.glob(os.path.join(args.acts_dir, "shard_*.npz")))
     if not shards:
         raise FileNotFoundError(f"no shard_*.npz in {args.acts_dir}")
 
-    def trim(lst):
+    def trim(lst, n):
         lst.sort(key=lambda r: -r[0])
-        del lst[args.exemplars:]
+        del lst[n:]
 
     for sp in shards:
         dd = np.load(sp)
@@ -154,11 +167,15 @@ def main() -> None:
             task, ep, ts = int(task_of[di]), int(ep_of[di]), int(ts_of[di])
             for s in range(S):
                 if zr[s] > 0:
-                    rec = (float(phi[s]), task, ep, ts, float(zr[s]), float(phi[s]))
-                    phi_ex[s].append((abs(rec[0]),) + rec[1:])
-                    z_ex[s].append((rec[4],) + rec[1:])
+                    ap = abs(float(phi[s]))
+                    rec = (ap, task, ep, ts, float(zr[s]), float(phi[s]))
+                    phi_ex[s].append(rec)
+                    z_ex[s].append((float(zr[s]),) + rec[1:])
+                    pt_ex[s].setdefault(task, []).append(rec)
         for s in range(S):
-            trim(phi_ex[s]); trim(z_ex[s])
+            trim(phi_ex[s], args.exemplars); trim(z_ex[s], args.exemplars)
+            for g in pt_ex[s]:
+                trim(pt_ex[s][g], args.per_task)
         print(f"[id]   {os.path.basename(sp)} scanned", flush=True)
 
     # --- write ---------------------------------------------------------------
@@ -167,14 +184,17 @@ def main() -> None:
                 for (_score, t, e, ts, zz, ph) in lst]
 
     out = {"layer": args.layer, "sae": ck_path, "top": args.top,
-           "exemplars": args.exemplars, "features": []}
+           "exemplars": args.exemplars, "per_task": args.per_task, "features": []}
     for s, j in enumerate(sel):
+        per_task = {str(g): pack(pt_ex[s][g]) for g in sorted(pt_ex[s])}
         out["features"].append({
             "feature": int(j), "role": role[int(j)],
             "PR": float(PR[j]), "magnitude": float(magnitude[j]),
             "base_rate": float(base_rate[j]), "adjusted_breadth": float(adj[j]),
+            "n_tasks_fired": len(per_task),
             "top_by_phi": pack(phi_ex[s]),
             "top_by_activation": pack(z_ex[s]),
+            "per_task_by_phi": per_task,
         })
     with open(os.path.join(args.out, "exemplars.json"), "w") as f:
         json.dump(out, f, indent=2)
