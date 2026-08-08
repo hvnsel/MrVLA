@@ -115,7 +115,11 @@ def main() -> None:
     p.add_argument("--out", required=True)
     p.add_argument("--gate-sample", type=int, default=2000,
                    help="decisions used for the gate (L1/L2); 0 = all")
-    p.add_argument("--gate-threshold", type=float, default=0.85)
+    p.add_argument("--gate-threshold", type=float, default=0.85,
+                   help="L1 argmax-match threshold (diagnostic only; see --suff-threshold)")
+    p.add_argument("--suff-threshold", type=float, default=0.80,
+                   help="SUFFICIENCY go/no-go: fraction of the action-margin logit the SAE "
+                        "features+bias must additively recover. Pre-register before reading.")
     p.add_argument("--force", action="store_true",
                    help="compute A4 even if the gate fails (for diagnosis only)")
     p.add_argument("--device", default="cuda:0")
@@ -147,7 +151,7 @@ def main() -> None:
     # ---------------- pass 1: the GATE, on a subsample ----------------------
     print("[attr] === GATE ===", flush=True)
     n_seen = agree = 0
-    logit_corrs, true_c, recon_c, hhat_c = [], [], [], []
+    logit_corrs, true_c, recon_c, hhat_c, feat_c = [], [], [], [], []
     for sp in shards:
         dd = np.load(sp)
         res = dd["residual"]                       # [n,7,d] float16
@@ -184,6 +188,7 @@ def main() -> None:
             phi_sum = float((l2[r] / r_scal) * (z[r].astype(np.float64) @ (W_dec @ gu)))
             const = float((mu[r] + b_pre_np) @ gu / r_scal)
             recon_c.append(phi_sum + const)
+            feat_c.append(phi_sum)                          # features ALONE (no bias)
             true_c.append(float(rmsnorm(h, g_gain, eps) @ u_c))
             hhat_c.append(float((h_hat @ gu) / r_scal))
             n_seen += 1
@@ -191,17 +196,46 @@ def main() -> None:
             break
 
     gate1 = agree / n_seen if n_seen else float("nan")
-    tc, rc, hc = np.array(true_c), np.array(recon_c), np.array(hhat_c)
+    tc, rc, hc, fc = (np.array(true_c), np.array(recon_c),
+                      np.array(hhat_c), np.array(feat_c))
 
     def _corr(x, y):
         a = x - x.mean(); b = y - y.mean()
         den = np.sqrt((a * a).sum() * (b * b).sum())
         return float((a * b).sum() / den) if den > 0 else float("nan")
 
+    # --- SUFFICIENCY: fraction of the action-margin logit recovered additively. -----
+    # The margin decomposes exactly (frozen r): true_c = phi_sum + const + phi_error,
+    #   phi_sum = features, const = mu+b_pre bias, phi_error = residual the SAE missed.
+    # Unlike L1 (a brittle argmax over the FULLY reconstructed 4096-d residual, punished
+    # by action-IRRELEVANT reconstruction error), sufficiency asks only: of the action
+    # direction's margin, what share do the features supply? A slope through the origin
+    # -- Sigma(true*comp)/Sigma(true^2) -- is "fraction recovered" in least squares:
+    # 1.0 = fully recovered, 0.5 = features supply half the margin. Robust (no per-sample
+    # division), and captures MAGNITUDE that a correlation (L2a) throws away.
+    def _slope(true, comp):
+        den = float((true * true).sum())
+        return float((true * comp).sum() / den) if den > 0 else float("nan")
+
+    suff_recon = _slope(tc, rc)         # features + SAE bias  (the go/no-go)
+    suff_feat = _slope(tc, fc)          # features ALONE       (how much is really features)
+    # per-decision median ratio for interpretability, guarding tiny denominators
+    med_abs = float(np.median(np.abs(tc))) if tc.size else 0.0
+    keep = np.abs(tc) > 0.1 * med_abs
+    suff_recon_median = float(np.median(rc[keep] / tc[keep])) if keep.any() else float("nan")
+
     gate2_corr = _corr(tc, rc)          # L2a: explains the ACTUAL logit
     gate2b_corr = _corr(hc, rc)         # L2b: frozen-r arithmetic exact? (bug canary)
+    suff_pass = bool(suff_recon >= args.suff_threshold)
     gate = {
         "n_decisions": n_seen,
+        # --- PRIMARY go/no-go: sufficiency in the action subspace ---
+        "sufficiency_recon": suff_recon,
+        "sufficiency_recon_median_ratio": suff_recon_median,
+        "sufficiency_features_only": suff_feat,
+        "suff_threshold": args.suff_threshold,
+        "suff_pass": suff_pass,
+        # --- L1: full-reconstruction argmax match (diagnostic; the brittle metric) ---
         "L1_action_match": gate1,
         "L1_mean_logit_corr": float(np.mean(logit_corrs)) if logit_corrs else float("nan"),
         "L1_threshold": args.gate_threshold,
@@ -212,7 +246,12 @@ def main() -> None:
         "L2b_mean_abs_discrepancy": float(np.abs(hc - rc).mean()),
         "L2b_is_exact": bool(gate2b_corr > 0.999),
     }
-    print(f"[attr] L1 action match      : {gate1:.4f}  (threshold {args.gate_threshold})")
+    print(f"[attr] SUFFICIENCY (recon)  : {suff_recon:.4f}  (threshold {args.suff_threshold}) "
+          f"<- GO/NO-GO: fraction of action margin recovered")
+    print(f"[attr]   median per-decision : {suff_recon_median:.4f}")
+    print(f"[attr]   features ALONE      : {suff_feat:.4f}  (of margin; rest is mu+b_pre bias)")
+    print(f"[attr] L1 action match      : {gate1:.4f}  (diagnostic; brittle argmax "
+          f"over full residual)")
     print(f"[attr] L1 mean logit corr   : {gate['L1_mean_logit_corr']:.4f}")
     print(f"[attr] L2a vs TRUE logit    : corr={gate2_corr:.4f}  "
           f"mean|diff|={gate['L2a_mean_abs_discrepancy']:.4f}   "
@@ -223,14 +262,17 @@ def main() -> None:
     if not gate["L2b_is_exact"]:
         print("[attr] WARNING: L2b is not ~1.000 -- the frozen-r decomposition does not "
               "reproduce its own reconstruction. That is a BUG, not a property of the data.")
-    print(f"[attr] GATE {'PASS' if gate['L1_pass'] else 'FAIL'}", flush=True)
+    print(f"[attr] GATE {'PASS' if suff_pass else 'FAIL'} "
+          f"(on sufficiency={suff_recon:.4f} vs {args.suff_threshold})", flush=True)
     with open(os.path.join(args.out, "gate.json"), "w") as f:
         json.dump(gate, f, indent=2)
 
-    if not gate["L1_pass"] and not args.force:
-        print("[attr] Gate failed: SAE features do not linearly explain action selection.\n"
-              "[attr] Stopping (this is a reportable methods finding). Use --force to "
-              "compute A4 anyway for diagnosis.", flush=True)
+    if not suff_pass and not args.force:
+        print("[attr] Gate failed on SUFFICIENCY: SAE features do not additively recover the\n"
+              "[attr] action-margin logit. This is the honest negative -- the features do not\n"
+              "[attr] carry the action direction, even ignoring action-irrelevant residual.\n"
+              "[attr] Stopping (reportable methods finding). Use --force to compute A4 anyway.",
+              flush=True)
         return
 
     # ---------------- pass 2: stream, accumulate C_j(g) ---------------------
