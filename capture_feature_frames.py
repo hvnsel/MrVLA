@@ -60,8 +60,9 @@ def main() -> None:
     p.add_argument("--image-key", default=None)
     p.add_argument("--cols", type=int, default=4, help="columns for the OVERALL (compact) layout")
     p.add_argument("--layout", choices=["auto", "per-task", "overall"], default="auto",
-                   help="auto = per-task grid (rows=tasks) for general features, compact grid "
-                        "for specialists; or force one for all features")
+                   help="auto/per-task = the 10-task grid (rows=tasks) for EVERY feature, so a "
+                        "general feature fills most rows and a specialist leaves most empty (the "
+                        "contrast is the point); overall = compact top-|phi| grid instead")
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
@@ -163,8 +164,9 @@ def main() -> None:
             use_pt = True
         elif args.layout == "overall":
             use_pt = False
-        else:  # auto
-            use_pt = (feat["role"] == "general")
+        else:  # auto: per-task grid for BOTH roles -- a general feature fills most of the
+               # 10 task-rows, a specialist leaves most empty. The contrast is the point.
+            use_pt = True
         fig = render_per_task(feat) if use_pt else render_overall(feat)
         if fig is None:
             print(f"[cap] feature {feat['feature']}: no exemplars, skipping")
