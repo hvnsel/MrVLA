@@ -325,7 +325,22 @@ explanation). Note vs. prior brittleness accounts (data scarcity, covariate shif
 learning, compositional/ grounding failures): those are behavioural/data-level; this is a
 *mechanistic, internal, per-decision* instantiation of the shortcut-learning hypothesis.
 
-### 3.2b Feature identification + visualisation *(NOW — the active step, 2026-08)*
+**Correction (2026-08): the paper (v2) already does feature ablation — ours is not a
+first necessity test, it is a ranking-method head-to-head.** v2 §5.2 (real-world DROID π0.5)
+*projects out four features per generality tier for the full episode*; success falls
+unsteered 97.5% → memorized(4 random) 92.5% → general(4 random) 65% → most-general(top 4)
+**0%**. v2 §F.4 sweeps **single-feature** ablation over 135 LIBERO features (20,250 episodes).
+So the paper tests necessity, and it holds: their-classifier-general features are behaviourally
+load-bearing, memorized ones are not. Two consequences. (i) Their random-general → 65% result
+*supports* our "many general features, not 8" point — they say so: "the broader general-feature
+population is behaviorally important, not only a few hand-picked directions." (ii) Their tiers
+are defined by the **firing-based classifier** we critique; the open question is therefore
+whether **our label-free breadth ranking predicts ablation cost as well as / better than their
+classifier**, and whether it flags load-bearing features the firing metric misses (rare-but-
+decisive; busy-but-inert). That head-to-head — same ablation protocol, our ranking vs theirs,
+on OpenVLA (argmax) as well as their π0.5 (flow) — is the real §3.2a contribution. NB the
+redundancy/"removes a vote" intuition only fits their *memorized/single* result; general
+coalitions are clearly not redundant in their data.
 
 Path A validated the breadth *axis*; it did not name a feature or produce a count (§2.6).
 This step makes the axis concrete without reintroducing circular labels.
