@@ -168,6 +168,43 @@ assignment; only greedy has been run at scale. Hungarian is implemented and need
 re-encoding. Similarly the second seed exists for **goal only**; §3.1 asks for >=2 seeds
 per (model, layer).
 
+### 2.6 Path A is a positive result: causal task-breadth survives confound control (2026-08)
+
+A1 (action-position collection) and A2 (SAE retrain on action-position residuals) closed
+the L0 gap of §2.3. The gate then went through a documented pivot, and A4 came back
+positive on the goal model.
+
+**The gate pivot (L1 → sufficiency).** L1 (full-residual argmax re-decode) **stalled at
+0.72** and would not clear 0.85: +150 epochs moved it 0.70→0.72, and raising sparsity
+k=100→256 only reached 0.76 on a shallow slope (clearing 0.85 would need k≈500–1500,
+abandoning sparsity). Diagnosis: L1 punishes the SAE for reconstructing the *entire* dense
+last-layer residual (information for the whole 32k vocab), most of it action-irrelevant,
+and argmax over tightly-packed bins is brittle. **Pivot:** gate on **sufficiency** — the
+fraction of the *action-margin* logit the features additively recover — measured as a
+through-origin slope `S = Σ_i c_i x_i / Σ_i c_i²`. This is the right estimand (does the
+decomposition explain the *action*, not the whole residual), it is magnitude-aware where a
+correlation is not, and a genuine signal clears it comfortably rather than at the margin.
+Recorded per commitment #5 (no outcome-dependent switching hidden): L1 is still reported
+beside sufficiency; the metric changed for a stated reason and before reading the value.
+
+**Gate result (goal, k=100, no retraining):** sufficiency `S = 0.9361` (features+bias
+recover 93.6% of the margin; threshold 0.80 → PASS), of which **features alone = 0.531**
+and a **constant default-action bias = 0.405** (μ+b_pre; a small finding — part of VLA
+action is a fixed lean toward rest), error ≈ 0.064; the three slopes sum to 1 by identity.
+Bug canary L2b = 1.0000 (mean|diff| 2.7e-14 — the frozen-r arithmetic is exact).
+
+**A4 result (446,096 decisions, 10 tasks, 2048 features):** PR mean 6.05, p10 2.65,
+p90 9.91 — a real specialist→generalist spectrum. Raw breadth is heavily activity-entangled
+(`PR ~ base rate = +0.82`), so the raw statistic is *not* the claim. The claim is the
+leave-one-task-out partial predicting held-out causal importance controlling **both**
+magnitude and base rate: **partial ρ = +0.493, 10/10 folds positive, min +0.399, sd 0.053.**
+Causal cross-task breadth is a real, firing-independent, out-of-sample axis.
+
+**Honest scope (what this is NOT).** No individual feature has been *identified* and no
+*count* of general features exists — a count needs a non-arbitrary cutoff (bimodality test),
+untested. The attribution is first-order (frozen r); the nonlinear/behavioural seal is
+coalition ablation (§3.2a). All numbers are the goal suite only.
+
 ---
 
 ## 3. Method: measuring generality without firing and without labels
@@ -214,14 +251,14 @@ retrain. Cheapest path to a first non-firing generality signal.
 | `Δ* ≈ 0`, noise floor resolvable | Features are model-local; generality does not survive independent fine-tuning. Coherent negative. |
 | Noise floor unresolvable (seeds match no better than chance) | SAE non-identifiability dominates at this scale — a methods result; **must not** be read as evidence about generality. |
 
-### 3.2 Path A — Causal task-breadth (attribution) *(gated; needs rebuild)*
+### 3.2 Path A — Causal task-breadth (attribution) *(DONE on goal 2026-08 — gate passed via sufficiency, A4 positive; see §2.6)*
 
-**Status: GO (2026-08). Scope: gate-first, layer 31 only.** We commit to A1–A3 (collect,
-retrain, gate) because they are a prefix of every larger scope and waste nothing; A4
-(metric) and A5 (behavioural) are built only if the gate passes. Layer 31 only, because
-the linear decomposition below is exact only where the residual feeds the readout
-directly; earlier layers need gradient/path-patching (a separate decision). See the full
-design doc for the from-scratch derivation.
+**Status: gate PASSED on goal, A4 positive (§2.6). Scope: layer 31 only.** A1–A3 built and
+run; the gate was pivoted from L1 to **sufficiency** (§2.6) and passed at 0.936 on the
+original k=100 SAE; A4 gave partial ρ = +0.493 (10/10 folds). Layer 31 only, because the
+linear decomposition below is exact only where the residual feeds the readout directly;
+earlier layers need gradient/path-patching (a separate decision). See the full design doc
+and `PathA_Technical_Report.pdf` for the from-scratch derivation.
 
 **Definition operationalised.** OpenVLA emits an action token by `logit(t) = RMSNorm(h)·u_t`
 at the action position — a dot product, hence additive. With the SAE writing
@@ -288,6 +325,47 @@ explanation). Note vs. prior brittleness accounts (data scarcity, covariate shif
 learning, compositional/ grounding failures): those are behavioural/data-level; this is a
 *mechanistic, internal, per-decision* instantiation of the shortcut-learning hypothesis.
 
+### 3.2b Feature identification + visualisation *(NOW — the active step, 2026-08)*
+
+Path A validated the breadth *axis*; it did not name a feature or produce a count (§2.6).
+This step makes the axis concrete without reintroducing circular labels.
+
+- **Rank, don't threshold.** Order features by **confound-adjusted breadth** = PR
+  residualised on (magnitude, base rate) — the same two-covariate control A4 already uses,
+  applied per feature instead of population-wide. Take the top of that ranking as *general
+  candidates* and the bottom (high magnitude, low PR) as *specialist candidates*. No hard
+  "general/not" cut is claimed; the ranking is the object.
+- **Max-|φ| exemplars.** For each candidate, stream the A1 shards, recompute z and φ, and
+  record the decisions with the largest |φ_j| (causal exemplars) — and separately the
+  largest z_j (activation exemplars). Store (task, episode, timestep, z, φ).
+- **Capture frames.** Re-open the LIBERO demos and pull the image frames at those
+  (task, episode, timestep) triples; assemble a contact sheet per feature. Eyeball what a
+  general feature vs a specialist feature actually responds to.
+- **What it answers.** (i) "Show me a general feature" — the reviewer's demand. (ii) The
+  §2.6 concession: does structural breadth correspond to a *meaningful* skill, or to an
+  input-correlated bookkeeping direction? Exemplar frames are the first evidence either way.
+- **Negative control (cheap, same machinery).** Permute task labels and recompute the A4
+  partial; a "generic causality is trivial" objection predicts it collapses to ≈0 while the
+  real value is +0.493. Run it to convert the verbal rebuttal into a figure.
+
+Files: `identify_features.py` (rank + exemplar-finding, reuses run_attribution's encoder)
+and `capture_feature_frames.py` (frame extraction + contact sheets, reuses
+`mrvla/libero_demos.py`).
+
+### 3.2c Replication roadmap *(DEFERRED — documented, not implemented)*
+
+Held until §3.2b confirms the axis picks out interpretable structure. Mechanical, not
+conceptual:
+
+1. **Other three suites.** Run A1→A4 for spatial, object, libero10 (same recipe, paths
+   swapped). Each SAE re-derives its own sufficiency gate — do not reuse goal's pass. Report
+   every suite's `partial|both` and fold consistency. One suite is a result; four is a
+   finding.
+2. **Second SAE seed, all four suites.** Repeat with `--seed 1`. Given §2.5 (SAE
+   dictionaries are only ~60% seed-reproducible), a single-seed feature-level result is not
+   yet stable; the second seed gives Path A the same seed-noise-floor discipline Path B has
+   (§3.1). Report seed agreement on the breadth ranking, not just the aggregate partial.
+
 ### 3.3 Axis 2 — Invariance (representational) *(existing data)*
 
 Hold the concept fixed, vary appearance, measure response stability: decompose a
@@ -314,21 +392,39 @@ DONE →  Path B: cross-model recurrence            → POSITIVE (§2.4)
           └─ unplanned findings: SAE seed-reproducibility ~60%; recurrence vs
              P(general) uncorrelated (§2.5)
 
-NOW  →  Path A rebuild: re-collect action-position residuals + retrain SAE
-          └─ viability gate (L0→L2)  ← go/no-go, run BEFORE building the metric
-          └─ participation-ratio task-breadth score
-        Behavioral: reliance vs cross-suite success   (needs A)
+DONE →  Path A on GOAL: attribution + sufficiency gate + A4  → POSITIVE (§2.6)
+          └─ gate pivot L1→sufficiency (0.936); A4 partial|both = +0.493, 10/10 folds
+
+NOW  →  Feature identification + visualisation (§3.2b)  ← the active step
+          └─ rank features by confound-adjusted breadth (residualised PR);
+             capture top max-|φ| exemplar frames per feature; eyeball what the
+             general vs specialist ends actually respond to. Answers "show me a
+             general feature" and tests structural-breadth vs meaningful-skill.
+          └─ negative control: permute task labels, recompute A4 partial (expect ≈0)
+
+DEFERRED (documented, NOT yet implemented — §3.2c replication roadmap):
+        1. Run Path A (A1→A4) for the other 3 suites: spatial, object, libero10.
+           One result → a finding only when it replicates. Same four commands per
+           suite, paths swapped. Watch: each SAE re-derives its own sufficiency gate.
+        2. Repeat ALL 4 suites with a SECOND SAE seed (--seed 1), so the breadth
+           result carries the same seed-noise-floor discipline as Path B (§3.1, §2.5:
+           SAE dictionaries are only ~60% seed-reproducible, so a single seed is not
+           enough to claim a feature-level result is stable).
+        + coalition ablation (§3.2a): broad vs narrow degradation; our-metric vs
+          firing-metric ranking as the head-to-head behavioural test.
 
 BACKLOG (cheap, on existing artifacts, no retraining):
         - Hungarian assignment at scale (unmet §3.1 step-3 commitment)
-        - second SAE seed for spatial / object / libero10 (§3.1 asks for >=2 per model)
+        - second SAE seed for spatial / object / libero10 (also serves Path B §3.1)
         - characterise the top-recurrence features (the §3.1 positive-outcome follow-up)
         - Axis 2: invariance → breadth×invariance quadrant map
 ```
 
-Path B is complete and positive, so the Path A rebuild is now funded: it is the only
-route to the causal and behavioural claims, and the only way to lift the mean-pooled
-prefill limitation (§2.3) that bounds what Path B's result can mean.
+Path A is now positive on the goal model. Before spending compute on replication
+(deferred above), we first make the result *concrete*: identify the features the breadth
+axis flags and look at what they do (§3.2b). Replication across suites and the second-seed
+repeat are the remaining bulk of the plan, but they are mechanical and are held until the
+identification step tells us the axis is picking out interpretable structure.
 
 ---
 
