@@ -58,7 +58,10 @@ def main() -> None:
     p.add_argument("--rank-by", choices=["phi", "activation"], default="phi",
                    help="which exemplar list to render (default: causal, |phi|)")
     p.add_argument("--image-key", default=None)
-    p.add_argument("--cols", type=int, default=4)
+    p.add_argument("--cols", type=int, default=4, help="columns for the OVERALL (compact) layout")
+    p.add_argument("--layout", choices=["auto", "per-task", "overall"], default="auto",
+                   help="auto = per-task grid (rows=tasks) for general features, compact grid "
+                        "for specialists; or force one for all features")
     p.add_argument("--out", required=True)
     args = p.parse_args()
 
@@ -102,31 +105,74 @@ def main() -> None:
             frame = np.asarray(frames[timestep])
         return np.asarray(_demo_image(frame))
 
-    for feat in ex["features"]:
-        recs = feat[key]
+    n_tasks = task_suite.n_tasks
+    per_task_cap = int(ex.get("per_task", 10))
+
+    def suptitle(feat):
+        return (f"feature {feat['feature']} · {feat['role']} · PR={feat['PR']:.2f} · "
+                f"adj_breadth={feat['adjusted_breadth']:+.1f} · "
+                f"fired in {feat.get('n_tasks_fired', '?')}/{n_tasks} tasks · ranked by {args.rank_by}")
+
+    def draw(ax, rec):
+        ax.set_xticks([]); ax.set_yticks([])
+        if rec is None:
+            return
+        img = load_frame(rec["task"], rec["episode"], rec["timestep"])
+        if img is not None:
+            ax.imshow(img)
+        ax.set_title(f"t{rec['timestep']} · z={rec['z']:.2f} φ={rec['phi']:+.2f}", fontsize=6)
+
+    def render_per_task(feat):
+        """Rows = every task in the suite; up to `per_task_cap` exemplars per row. A general
+        feature fills most rows; a specialist leaves most rows empty -- both are informative."""
+        pt = feat.get("per_task_by_phi", {})
+        cols = per_task_cap
+        fig, axes = plt.subplots(n_tasks, cols, figsize=(cols * 1.35, n_tasks * 1.5),
+                                 squeeze=False)
+        for g in range(n_tasks):
+            recs = pt.get(str(g), [])
+            for c in range(cols):
+                ax = axes[g][c]
+                draw(ax, recs[c] if c < len(recs) else None)
+                if c == 0:
+                    ax.set_ylabel(f"task {g}", fontsize=8, rotation=0, ha="right", va="center",
+                                  labelpad=18)
+        fig.suptitle(suptitle(feat), fontsize=11)
+        fig.tight_layout(rect=[0.03, 0, 1, 0.985])
+        return fig
+
+    def render_overall(feat):
+        recs = feat["top_by_phi" if args.rank_by == "phi" else "top_by_activation"]
         if not recs:
+            return None
+        n = len(recs); cols = min(args.cols, n); rows = (n + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.4, rows * 2.6), squeeze=False)
+        axes = axes.ravel()
+        for ax in axes:
+            ax.set_xticks([]); ax.set_yticks([])
+        for i, rec in enumerate(recs):
+            draw(axes[i], rec)
+            axes[i].set_title(f"task {rec['task']} · t{rec['timestep']} · "
+                              f"z={rec['z']:.2f} φ={rec['phi']:+.2f}", fontsize=6)
+        fig.suptitle(suptitle(feat), fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        return fig
+
+    for feat in ex["features"]:
+        if args.layout == "per-task":
+            use_pt = True
+        elif args.layout == "overall":
+            use_pt = False
+        else:  # auto
+            use_pt = (feat["role"] == "general")
+        fig = render_per_task(feat) if use_pt else render_overall(feat)
+        if fig is None:
             print(f"[cap] feature {feat['feature']}: no exemplars, skipping")
             continue
-        n = len(recs)
-        cols = min(args.cols, n)
-        rows = (n + cols - 1) // cols
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.4, rows * 2.6))
-        axes = np.atleast_1d(axes).ravel()
-        for ax in axes:
-            ax.axis("off")
-        for i, rec in enumerate(recs):
-            img = load_frame(rec["task"], rec["episode"], rec["timestep"])
-            ax = axes[i]
-            if img is not None:
-                ax.imshow(img)
-            ax.set_title(f"task {rec['task']} · t{rec['timestep']}\n"
-                         f"z={rec['z']:.2f} φ={rec['phi']:+.2f}", fontsize=7)
-        fig.suptitle(f"feature {feat['feature']} · {feat['role']} · "
-                     f"PR={feat['PR']:.2f} · adj_breadth={feat['adjusted_breadth']:+.1f} · "
-                     f"ranked by {args.rank_by}", fontsize=10)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        outp = os.path.join(args.out, f"feat_{feat['feature']:05d}_{feat['role']}_{args.rank_by}.png")
-        fig.savefig(outp, dpi=130); plt.close(fig)
+        tag = "pertask" if use_pt else "overall"
+        outp = os.path.join(args.out,
+                            f"feat_{feat['feature']:05d}_{feat['role']}_{tag}_{args.rank_by}.png")
+        fig.savefig(outp, dpi=120); plt.close(fig)
         print(f"[cap] wrote {outp}")
 
     print(f"[cap] done -> {args.out}")
