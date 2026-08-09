@@ -65,6 +65,27 @@ def adjusted_breadth(PR, magnitude, base_rate, active):
     return out
 
 
+def select_general_specialist(adj, magnitude, active, top):
+    """Pick `top` general and `top` specialist features, BOTH drawn only from load-bearing
+    features (magnitude at or above the active median), so we contrast "broad and strong"
+    against "narrow and strong" rather than against weak noise.
+
+    general    = highest adjusted breadth among eligible.
+    specialist = lowest  adjusted breadth among eligible.
+
+    Returns (general_idx_list, specialist_idx_list). Both ends are restricted to the eligible
+    set: we rank ONLY the eligible indices and slice both ends of that ranking, so an
+    ineligible (weak / inactive) feature can never land in either list.
+    """
+    med_mag = np.nanmedian(magnitude[active])
+    eligible = active & (magnitude >= med_mag) & np.isfinite(adj)
+    elig_idx = np.where(eligible)[0]
+    elig_order = elig_idx[np.argsort(adj[elig_idx])]        # eligible only, ascending by adj
+    general = elig_order[::-1][:top].tolist()               # highest adjusted breadth
+    specialist = elig_order[:top].tolist()                  # lowest adjusted breadth
+    return general, specialist
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -93,14 +114,7 @@ def main() -> None:
     active = A["is_active"].astype(bool)
     adj = adjusted_breadth(PR, magnitude, base_rate, active)
 
-    # general = top adjusted breadth; specialist = bottom adjusted breadth, but only among
-    # features that actually carry causal weight (magnitude above its active median), so we
-    # contrast "broad and load-bearing" against "narrow and load-bearing", not against noise.
-    med_mag = np.nanmedian(magnitude[active])
-    eligible = active & (magnitude >= med_mag) & np.isfinite(adj)
-    order = np.argsort(np.where(eligible, adj, -np.inf))          # ascending
-    general = order[::-1][:args.top].tolist()                    # highest adjusted breadth
-    specialist = order[:args.top].tolist()                       # lowest, among eligible
+    general, specialist = select_general_specialist(adj, magnitude, active, args.top)
     selected = general + specialist
     role = {j: "general" for j in general}
     role.update({j: "specialist" for j in specialist})

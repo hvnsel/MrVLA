@@ -19,8 +19,30 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from identify_features import adjusted_breadth               # noqa: E402
+from identify_features import adjusted_breadth, select_general_specialist   # noqa: E402
 from capture_feature_frames import min_episode_per_task       # noqa: E402
+
+
+def test_specialists_are_strong_not_weak():
+    """Regression for the -inf bug: specialists must be the LOWEST adjusted breadth among
+    LOAD-BEARING features -- never the weak, below-median-magnitude ones. Both ends of the
+    ranking must come from the eligible (strong) set."""
+    import numpy as np
+    F = 12
+    active = np.ones(F, bool)
+    # features 0-5 strong (eligible), 6-11 weak (ineligible: below-median magnitude)
+    magnitude = np.array([9, 8, 7, 6, 5, 4, 0.3, 0.2, 0.1, 0.05, 0.02, 0.01])
+    adj = np.array([2.0, 1.0, 0.0, -1.0, -2.0, -3.0, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0])
+    med = np.median(magnitude[active])
+    eligible = magnitude >= med
+    general, specialist = select_general_specialist(adj, magnitude, active, top=3)
+    # general = the strongest-adjusted eligible features (0,1,2)
+    assert set(general) == {0, 1, 2}
+    # specialist = the weakest-ADJUSTED but still ELIGIBLE features (5,4,3) -- NOT 6-11
+    assert set(specialist) == {3, 4, 5}
+    # neither list may contain an ineligible (weak) feature
+    for j in general + specialist:
+        assert eligible[j], f"feature {j} is ineligible but was selected"
 
 
 def test_adjusted_breadth_demotes_pure_confound():
