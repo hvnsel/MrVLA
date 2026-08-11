@@ -143,13 +143,24 @@ def build_probe_frames(suites: list[str], frames_per_suite: int, seed: int,
 # Phase 2: replay the fixed frames through one model
 # ---------------------------------------------------------------------------
 def run_model_over_frames(model_id: str, frames: list[dict], layer_indices: list[int],
-                          device: str, center_crop: bool, use_flash_attn: bool):
-    """Return acts [N_frames, L, H] float16 for one model over the shared frames."""
-    print(f"[probe] loading {model_id} ...", flush=True)
+                          device: str, center_crop: bool, use_flash_attn: bool,
+                          pool: str = "mean"):
+    """Return acts [N_frames, L, H] float16 for one model over the shared frames.
+
+    pool="mean"  -> mean-pooled prefill activation (the original recurrence input; matches
+                    the main-study SAEs).
+    pool="last"  -> the prefill's LAST-position residual = the FIRST action-token position,
+                    un-pooled. This is a pure function of the input frame (no generated
+                    tokens feed it, so models that would take different actions do not
+                    diverge here), and it is the same residual distribution the Path A
+                    action-position SAEs were trained on -- so recurrence run on this probe
+                    with the ACTION-POSITION SAEs is per-feature comparable to Path A.
+    """
+    print(f"[probe] loading {model_id} (pool={pool}) ...", flush=True)
     model, processor = load_openvla(model_id, device=device, use_flash_attn=use_flash_attn)
     layers = locate_decoder_layers(model)
     hidden = get_hidden_dim(layers)
-    collector = ActivationCollector(layers, layer_indices=layer_indices, pool="mean",
+    collector = ActivationCollector(layers, layer_indices=layer_indices, pool=pool,
                                     dtype=torch.float16)
     acts = np.empty((len(frames), len(layer_indices), hidden), dtype=np.float16)
     try:
@@ -194,6 +205,11 @@ def main() -> None:
     p.add_argument("--models", default=None,
                    help="Comma list of key=model_id. Default: 4 fine-tunes + base.")
     p.add_argument("--layers", default="0,8,16,24,31")
+    p.add_argument("--pool", choices=["mean", "last"], default="mean",
+                   help="mean = pooled prefill (original; use with the prefill SAEs). "
+                        "last = first action-position residual, un-pooled (use with the "
+                        "ACTION-POSITION SAEs; makes recurrence per-feature comparable to "
+                        "Path A). For 'last' you typically want --layers 31.")
     p.add_argument("--frames-per-suite", type=int, default=200)
     p.add_argument("--max-tasks", type=int, default=None)
     p.add_argument("--image-key", default=None)
@@ -216,7 +232,7 @@ def main() -> None:
     manifest = {
         "n_frames": len(frames), "suites": suites, "layers": layer_indices,
         "models": models, "center_crop": bool(args.center_crop), "seed": args.seed,
-        "frames": meta,
+        "pool": args.pool, "meta": meta, "frames": meta,
     }
     with open(os.path.join(args.out, "probe_manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
@@ -227,6 +243,7 @@ def main() -> None:
         acts = run_model_over_frames(
             model_id, frames, layer_indices, args.device,
             center_crop=args.center_crop, use_flash_attn=not args.no_flash_attn,
+            pool=args.pool,
         )
         out_path = os.path.join(args.out, f"probe_{key}.npz")
         np.savez_compressed(

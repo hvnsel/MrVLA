@@ -81,7 +81,7 @@ def main() -> None:
     manifest = json.load(open(os.path.join(args.probe_dir, "probe_manifest.json")))
     layers = list(manifest["layers"])
     lp = layers.index(args.layer)
-    meta = manifest["meta"]                                 # per-frame provenance
+    meta = manifest.get("meta") or manifest["frames"]      # per-frame provenance (either key)
 
     # encode the shared probe through every model's SAE at the layer -> Z^m [N, F]
     Z = {}
