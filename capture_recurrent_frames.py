@@ -54,7 +54,9 @@ def main() -> None:
     p.add_argument("--features", required=True, help="identify_recurrent_features.py json")
     p.add_argument("--target", required=True)
     p.add_argument("--layer", type=int, default=31)
-    p.add_argument("--top-frames", type=int, default=8)
+    p.add_argument("--per-suite", type=int, default=8,
+                   help="top-activating frames to show PER SUITE per model, so a feature's "
+                        "activation on NON-home suites is visible (default 8)")
     p.add_argument("--which", choices=["re_derived_recurrent", "inherited_recurrent"],
                    default="re_derived_recurrent")
     p.add_argument("--image-key", default=None)
@@ -110,6 +112,16 @@ def main() -> None:
             arr = np.asarray(obs[ik][int(fr["timestep"])])
         return np.asarray(_demo_image(arr))
 
+    # group probe frames by SUITE once, so each (model, suite) block shows that model's
+    # feature's top activations WITHIN that suite -- revealing whether a feature fires only
+    # on its home suite or generalises across suites (the whole point of this view).
+    suites = sorted({fr["suite"] for fr in meta})
+    suite_idx = {s: np.array([i for i, fr in enumerate(meta) if fr["suite"] == s])
+                 for s in suites}
+    nps = args.per_suite
+    ncols = len(suites) * nps
+    ACC = "#1f4e79"
+
     for entry in feats:
         jt = entry["feature"]
         # matched feature per model (target maps to itself)
@@ -119,29 +131,38 @@ def main() -> None:
                 continue
             matched[m] = best_match(Z[args.target][:, jt], Z[m])
 
-        cols = args.top_frames
-        fig, axes = plt.subplots(len(models), cols, figsize=(cols * 1.5, len(models) * 1.7),
-                                 squeeze=False)
+        fig, axes = plt.subplots(len(models), ncols,
+                                 figsize=(ncols * 0.85, len(models) * 1.5), squeeze=False)
         for ri, m in enumerate(models):
             k, corr = matched[m]
-            top = np.argsort(Z[m][:, k])[::-1][:cols]
-            for ci in range(cols):
-                ax = axes[ri][ci]; ax.set_xticks([]); ax.set_yticks([])
-                if ci < len(top):
-                    fr = meta[int(top[ci])]
-                    try:
-                        ax.imshow(frame_image(fr))
-                    except Exception:
-                        pass
-                    ax.set_title(f"{fr['suite'][7:][:6]} z={Z[m][int(top[ci]), k]:.1f}", fontsize=6)
-                if ci == 0:
-                    ax.set_ylabel(f"{m}\nfeat {k}\nr={corr:.2f}", fontsize=7,
-                                  rotation=0, ha="right", va="center", labelpad=22)
+            zcol = Z[m][:, k]
+            ci = 0
+            for s in suites:
+                idx = suite_idx[s]
+                order = idx[np.argsort(zcol[idx])[::-1][:nps]]   # top-nps WITHIN this suite
+                for slot in range(nps):
+                    ax = axes[ri][ci]; ax.set_xticks([]); ax.set_yticks([])
+                    if slot < len(order):
+                        fr = meta[int(order[slot])]
+                        try:
+                            ax.imshow(frame_image(fr))
+                        except Exception:
+                            pass
+                        ax.set_title(f"z={zcol[int(order[slot])]:.1f}", fontsize=5)
+                    # suite header over the first cell of each block, on the top row
+                    if ri == 0 and slot == 0:
+                        ax.text(0.0, 1.32, s.replace("libero_", ""), transform=ax.transAxes,
+                                fontsize=8.5, color=ACC, fontweight="bold")
+                    # model / matched-feature label on the very first cell of the row
+                    if ci == 0:
+                        ax.set_ylabel(f"{m}\nfeat {k}\nr={corr:.2f}", fontsize=7,
+                                      rotation=0, ha="right", va="center", labelpad=22)
+                    ci += 1
         fig.suptitle(f"recurrent feature: {args.target} feat {jt}  "
                      f"(q_cross={entry.get('q_cross', float('nan')):.2f}, "
                      f"inheritance={entry.get('inheritance', float('nan')):.2f}) — "
-                     f"same feature across models?", fontsize=10)
-        fig.tight_layout(rect=[0.04, 0, 1, 0.97])
+                     f"top {nps}/suite per model; does it fire OFF its home suite?", fontsize=10)
+        fig.tight_layout(rect=[0.05, 0, 1, 0.95])
         outp = os.path.join(args.out, f"recur_{args.target}_feat{jt:05d}.png")
         fig.savefig(outp, dpi=120); plt.close(fig)
         print(f"[rec-frames] wrote {outp}")
