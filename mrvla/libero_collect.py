@@ -105,6 +105,11 @@ def collect_libero(
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
+    # torch >= 2.6 defaults torch.load to weights_only=True, which rejects the pickled numpy
+    # init-state files read by get_task_init_states below. See mrvla.torch_compat.
+    from mrvla.torch_compat import allow_numpy_pickles
+    allow_numpy_pickles()
+
     if max_steps is None:
         max_steps = _SUITE_MAX_STEPS.get(task_suite_name, 300)
 

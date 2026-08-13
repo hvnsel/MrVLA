@@ -227,6 +227,13 @@ def main() -> None:
                        "info": built["info"], "n_tasks": built["n_tasks"],
                        "max_steps": max_steps, "seed": args.seed}, f, indent=2)
 
+    # torch >= 2.6 defaults torch.load to weights_only=True, which rejects LIBERO's pickled
+    # numpy init-state files inside benchmark.get_task_init_states. Allowlist the numpy
+    # symbols an ndarray pickle needs (process-wide) rather than disabling the check for
+    # every checkpoint this process loads. Must run BEFORE the benchmark is constructed.
+    from mrvla.torch_compat import allow_numpy_pickles
+    allow_numpy_pickles()
+
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
     task_suite = benchmark.get_benchmark_dict()[args.task_suite]()
