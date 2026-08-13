@@ -78,9 +78,23 @@ def get_hidden_dim(layers: torch.nn.ModuleList) -> int:
 
 
 def build_inputs(processor, image: Image.Image, instruction: str, device: str):
-    """Tokenize the OpenVLA prompt + image into model inputs (bf16)."""
+    """Tokenize the OpenVLA prompt + image into model inputs (bf16).
+
+    NOTE: attention_mask is deliberately NOT returned. OpenVLA's predict_action() appends the
+    SentencePiece empty token (29871) to input_ids when the prompt does not already end with
+    it, but it does not extend an attention_mask passed in alongside. The mask then sits one
+    token shorter than the multimodal embedding sequence (text + 256 image patches) and Llama
+    attention dies with an off-by-one such as "size of tensor a (279) must match tensor b
+    (278)". Dropping it here lets generate() build a correctly-sized mask AFTER the append.
+
+    This is safe for every current caller: predict_and_capture popped it anyway,
+    collect_action_activations reads only input_ids/pixel_values, and run_ablation forwards
+    the dict straight into predict_action. A future caller doing BATCHED inference with
+    padding would need a real mask and must build one after the 29871 append, not before.
+    """
     prompt = PROMPT_TEMPLATE.format(instruction=instruction.lower().strip().rstrip("."))
     inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
+    inputs.pop("attention_mask", None)
     return inputs
 
 
