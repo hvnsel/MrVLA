@@ -147,6 +147,31 @@ def test_singleton_conditions_are_one_feature_each():
     assert all(len(v) == 1 for v in got.values()), got
 
 
+
+def test_coverage_flags_missing_cells_and_common_tasks():
+    """A dead worker leaves whole (condition, task) cells empty. The analyzer must SAY so:
+    silently averaging each column over a different task set is how an incomplete run gets
+    misread as 'ablation improved success'."""
+    import numpy as np
+    from analyze_ablation import coverage
+    conds, T = ["baseline", "only_1"], 4
+    tot = {c: np.full(T, 20.0) for c in conds}
+    tot["baseline"][2] = 0          # baseline missing task 2
+    tot["only_1"][0] = 0            # only_1 missing task 0
+    missing, complete = coverage(tot, conds, T)
+    assert sorted(missing) == [("baseline", 2), ("only_1", 0)]
+    assert list(complete) == [False, True, False, True]
+
+
+def test_coverage_clean_run_has_no_missing():
+    import numpy as np
+    from analyze_ablation import coverage
+    conds, T = ["baseline", "only_1"], 3
+    tot = {c: np.full(T, 20.0) for c in conds}
+    missing, complete = coverage(tot, conds, T)
+    assert missing == [] and complete.all()
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
