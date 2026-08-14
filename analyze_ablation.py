@@ -40,6 +40,21 @@ def participation_ratio(v: np.ndarray) -> float:
     return float(s1 * s1 / s2) if s2 > 0 else float("nan")
 
 
+def coverage(tot: dict, conds: list, n_tasks: int):
+    """Which (condition, task) cells have no episodes, and which tasks every condition has.
+
+    Returns (missing, complete) where `missing` is a list of (condition, task) and `complete`
+    is a bool mask [n_tasks] marking tasks present in EVERY condition. Cross-condition means
+    are only comparable over `complete`: a dead worker leaves different holes in different
+    columns, so a plain per-column mean silently averages each condition over a different
+    task set.
+    """
+    import numpy as _np
+    missing = [(c, t) for c in conds for t in range(n_tasks) if tot[c][t] == 0]
+    complete = _np.array([all(tot[c][t] > 0 for c in conds) for t in range(n_tasks)])
+    return missing, complete
+
+
 def _pearson(a, b):
     a, b = np.asarray(a, float), np.asarray(b, float)
     m = np.isfinite(a) & np.isfinite(b)
@@ -83,6 +98,35 @@ def main() -> None:
     if not has_base:
         print("[abl] WARNING: no baseline condition -- damage is uninterpretable without it.")
 
+    # ---------------- coverage: refuse to compare unequal task sets silently ----------
+    # A dead worker leaves whole (condition, task) cells empty. Two things then go wrong
+    # QUIETLY: (a) the ALL column averages each condition over a DIFFERENT subset of tasks,
+    # so a condition that happens to be missing a hard task looks better than baseline; and
+    # (b) a single missing baseline task makes every damage vector carry a NaN, which turns
+    # damage_PR and corr(damage, attribution) into NaN for every condition at once.
+    missing, complete = coverage(tot, conds, n_tasks)
+    if missing:
+        by_cond: dict[str, list[int]] = {}
+        for c, t in missing:
+            by_cond.setdefault(c, []).append(t)
+        print(f"\n[abl] *** INCOMPLETE: {len(missing)} of {len(conds) * n_tasks} "
+              f"(condition, task) cells have no episodes ***")
+        for c, ts in sorted(by_cond.items()):
+            print(f"[abl]   {c:22s} missing tasks {ts}")
+        if has_base and "baseline" in by_cond:
+            print("[abl]   BASELINE itself is incomplete -- every damage number below is NaN "
+                  "on those tasks, and damage_PR / corr collapse to NaN entirely.")
+        print("[abl]   The ALL row below averages conditions over DIFFERENT task sets and is "
+              "NOT comparable across columns.")
+        print("[abl]   Re-run the missing shards before interpreting anything. With "
+              f"--n-workers W, cell (condition ci, task t) belongs to worker "
+              f"(ci*{n_tasks} + t) mod W, using the manifest's condition order.")
+        if complete.any():
+            print(f"[abl]   Tasks complete in ALL conditions: {list(np.where(complete)[0])} "
+                  f"-- 'ALL(common)' below uses only these and IS comparable.")
+        else:
+            print("[abl]   No task is complete across all conditions.")
+
     # ---------------- per-task table ----------------
     print("\n=== success rate per task ===")
     hdr = "task  " + "".join(f"{c[:14]:>16s}" for c in conds)
@@ -91,6 +135,11 @@ def main() -> None:
         line = f"{t:<6d}" + "".join(f"{rate[c][t]:>15.2f} " for c in conds)
         print(line)
     print("ALL   " + "".join(f"{np.nanmean(rate[c]):>15.2f} " for c in conds))
+    if not complete.all():
+        # same task set for every column -> the only cross-condition comparison that is valid
+        # while shards are missing
+        print("ALL(common)" + "".join(f"{np.nanmean(rate[c][complete]):>10.2f} " for c in conds)
+              if complete.any() else "ALL(common)  -- no task complete in every condition")
 
     # ---------------- per-condition summary ----------------
     summary = {"n_episodes": len(rows), "n_tasks": n_tasks, "conditions": {}}
