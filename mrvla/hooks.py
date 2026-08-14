@@ -280,3 +280,111 @@ class ActivationAblator:
 
     def __exit__(self, *exc) -> None:
         self.remove()
+
+
+class ActivationSteerer:
+    """Registers a forward hook that ADDS scaled decoder directions to the residual stream.
+
+        h_steered = h + sum_k alpha_k * w_k
+
+    The additive counterpart to ActivationAblator. Ablation asks whether a feature is
+    NECESSARY (remove it, does behaviour break); steering asks whether it is SUFFICIENT to
+    drive behaviour (amplify it, does the predicted behaviour appear). Steering is a far
+    stronger intervention: removing one feature of a k=100 TopK code strips ~1% of the
+    reconstruction, while adding alpha*w at alpha comparable to the residual norm dominates it.
+
+    Choosing alpha
+    --------------
+    Decoder rows are unit-norm, so alpha is measured in units of residual-stream norm. That
+    norm is model- and layer-specific, so an alpha copied from another paper's model means
+    nothing here. Two ways to set it:
+
+      alphas=[...]  absolute magnitudes, used as given (REPRODUCIBLE -- prefer this for
+                    multi-worker runs, where every shard must apply the identical
+                    intervention).
+      gamma=g       alpha is resolved on the FIRST hooked pass as g * mean||h||, then frozen
+                    for the lifetime of the hook. Convenient for calibration, but each worker
+                    measures its own scale, so pin `alphas` once you know the value.
+
+    `resolved_alphas` exposes whatever was actually applied, so a gamma-calibrated run can be
+    logged and then pinned.
+
+    Parameters
+    ----------
+    layer                : the nn.Module to hook.
+    directions           : [K, d] decoder rows to add. Normalised to unit norm internally.
+    alphas               : [K] absolute magnitudes, or None to use `gamma`.
+    gamma                : relative magnitude (multiple of mean residual norm). Ignored when
+                           `alphas` is given; required when it is not.
+    steer_decode_passes  : True applies the perturbation on ALL passes, including each of the
+                           7 action-token decode passes. False steers only the prefill.
+    """
+
+    def __init__(
+        self,
+        layer: torch.nn.Module,
+        directions: torch.Tensor,      # [K, d]
+        alphas: torch.Tensor | None = None,
+        gamma: float | None = None,
+        steer_decode_passes: bool = True,
+    ):
+        if directions.ndim != 2:
+            raise ValueError(f"directions must be [K, d], got {tuple(directions.shape)}")
+        if alphas is None and gamma is None:
+            raise ValueError("provide alphas (absolute) or gamma (relative to residual norm)")
+
+        norms = directions.norm(dim=1, keepdim=True).clamp(min=1e-8)
+        self._V = (directions / norms).float().cpu()            # [K, d]
+        self._gamma = gamma
+        self.steer_decode_passes = steer_decode_passes
+        self.resolved_scale: float | None = None                # mean||h|| if gamma was used
+
+        if alphas is not None:
+            a = torch.as_tensor(alphas, dtype=torch.float32).reshape(-1).cpu()
+            if a.numel() != self._V.shape[0]:
+                raise ValueError(f"alphas has {a.numel()} entries for {self._V.shape[0]} "
+                                 f"directions")
+            self.resolved_alphas: torch.Tensor | None = a
+        else:
+            self.resolved_alphas = None                          # resolved on first pass
+
+        self._delta: torch.Tensor | None = None                  # [d], cached sum
+        self._call_count = 0
+        self._handle = layer.register_forward_hook(self._hook)
+
+    def _hook(self, _module, _inputs, output):
+        self._call_count += 1
+        if not self.steer_decode_passes and self._call_count > 1:
+            return
+
+        hidden = output[0] if isinstance(output, tuple) else output   # [B, S, d]
+        if self._V.shape[0] == 0:
+            return
+
+        if self.resolved_alphas is None:
+            # calibrate once against the actual residual scale, then freeze
+            scale = float(hidden.float().norm(dim=-1).mean())
+            self.resolved_scale = scale
+            self.resolved_alphas = torch.full((self._V.shape[0],),
+                                              float(self._gamma) * scale)
+        if self._delta is None:
+            self._delta = (self.resolved_alphas[:, None] * self._V).sum(0)   # [d]
+
+        delta = self._delta.to(device=hidden.device, dtype=torch.float32)
+        h_out = (hidden.float() + delta).to(hidden.dtype)
+        if isinstance(output, tuple):
+            return (h_out,) + output[1:]
+        return h_out
+
+    def reset_step(self) -> None:
+        """Reset the per-inference-step call counter (does NOT recalibrate alpha)."""
+        self._call_count = 0
+
+    def remove(self) -> None:
+        self._handle.remove()
+
+    def __enter__(self) -> "ActivationSteerer":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.remove()
