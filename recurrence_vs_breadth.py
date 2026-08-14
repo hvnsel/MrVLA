@@ -41,7 +41,7 @@ from identify_features import adjusted_breadth
 from identify_recurrent_features import recurrence_beyond
 
 
-def bin_stats(breadth, y, active, n_bins=10):
+def bin_stats(breadth, y, active, n_bins=50):
     """Bin active features into n_bins EQUAL-COUNT bins by ascending breadth; return per-bin
     (percentile center, mean y, standard error). Equal-count bins => none empty, stable means."""
     m = active & np.isfinite(breadth) & np.isfinite(y)
@@ -104,7 +104,7 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--pair", action="append", required=True,
                    help="label=attr_npz=rec_npz ; repeat for each model")
-    p.add_argument("--n-bins", type=int, default=10)
+    p.add_argument("--n-bins", type=int, default=50)
     p.add_argument("--top-frac", type=float, default=0.10)
     p.add_argument("--n-perm", type=int, default=5000)
     p.add_argument("--out", required=True, help="output png (json written alongside)")
