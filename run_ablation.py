@@ -113,6 +113,44 @@ def build_coalitions(attr_path: str, top: int, seed: int = 0) -> dict:
             "n_tasks": int(C.shape[0])}
 
 
+def parse_feature_specs(specs, ablate_each) -> dict:
+    """Turn --features / --ablate-each into {condition_name: [feature ids]}.
+
+    --features accepts "name=1,2,3" (a named set) or a bare "1,2,3" (named "custom"), and is
+    repeatable, so several sets can be compared in ONE run against the same baseline on
+    identical init states -- which is a genuinely paired comparison, unlike running them as
+    separate jobs.
+
+    --ablate-each takes a bare id list and makes one SINGLETON condition per id ("only_<id>").
+    That is the right shape when each feature carries its own prediction about which task it
+    should damage: a coalition confounds the features with each other and cannot be read
+    per-feature.
+    """
+    out: dict[str, list[int]] = {}
+    for spec in (specs or []):
+        name, sep, ids = spec.partition("=")
+        if not sep:
+            name, ids = "custom", spec
+        name = name.strip()
+        feats = [int(x) for x in ids.split(",") if x.strip()]
+        if not name:
+            raise SystemExit(f"--features {spec!r}: empty condition name")
+        if not feats:
+            raise SystemExit(f"--features {spec!r}: no feature ids")
+        if name in out:
+            raise SystemExit(f"--features: duplicate condition name {name!r}")
+        out[name] = feats
+    for tok in (ablate_each or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        name = f"only_{int(tok)}"
+        if name in out:
+            raise SystemExit(f"--ablate-each: {name!r} already defined by --features")
+        out[name] = [int(tok)]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # One closed-loop episode
 # ---------------------------------------------------------------------------
@@ -181,8 +219,12 @@ def main() -> None:
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--conditions", default="baseline,general,specialist,random,firing",
                    help="comma list; baseline is strongly recommended (it is the ceiling)")
-    p.add_argument("--features", default=None,
-                   help="comma list of feature ids -> an extra 'custom' condition")
+    p.add_argument("--features", action="append", default=None,
+                   help="NAME=id,id,... (or a bare id list -> 'custom'). Repeatable, so "
+                        "several named sets run against one baseline on the same init states.")
+    p.add_argument("--ablate-each", default=None,
+                   help="comma list of feature ids; ablates each ONE ON ITS OWN as condition "
+                        "only_<id>. Use when each feature has its own per-task prediction.")
     p.add_argument("--individual", action="store_true",
                    help="also ablate each general/specialist feature on its own")
     p.add_argument("--worker-id", type=int, default=0)
@@ -203,19 +245,26 @@ def main() -> None:
 
     built = build_coalitions(args.attr, args.top, seed=args.seed)
     coalitions = dict(built["coalitions"])
-    if args.features:
-        coalitions["custom"] = [int(x) for x in args.features.split(",") if x.strip()]
+    user_sets = parse_feature_specs(args.features, args.ablate_each)
+    coalitions.update(user_sets)
     if args.individual:
         for role in ("general", "specialist"):
             for j in built["coalitions"][role]:
                 coalitions[f"{role}_only_{j}"] = [int(j)]
 
     wanted = [c.strip() for c in args.conditions.split(",") if c.strip()]
-    if args.features:
-        wanted.append("custom")
+    wanted += list(user_sets)
     if args.individual:
         wanted += [k for k in coalitions if "_only_" in k]
-    conditions = [c for c in wanted if c == "baseline" or c in coalitions]
+    # de-duplicate, preserving order: a user-named set that also appears in --conditions must
+    # not be scheduled (and billed for GPU time) twice.
+    seen: set[str] = set()
+    conditions = []
+    for c in wanted:
+        if c in seen or not (c == "baseline" or c in coalitions):
+            continue
+        seen.add(c)
+        conditions.append(c)
 
     # manifest (worker 0 only, so all workers agree on one file)
     if args.worker_id == 0:
