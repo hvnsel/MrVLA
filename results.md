@@ -207,6 +207,13 @@ line of caution, not the headline.
 
 ---
 
+## Plan of record
+
+`notes/paper_plan.md` holds the standing decision: ship a scoped v1 now, v2 later. It carries
+the v1 thesis, what is in and out of scope, the honest limits to disclose, and the clean
+re-run checklist that the paper's final numbers must come from. Read it before starting new
+work.
+
 ## Open threads / next results to land here
 
 - **Coalition ablation** (built, not yet run): top-N general vs specialist
