@@ -109,6 +109,44 @@ def test_scope_correlation_matches_attribution():
     assert _pearson(unrelated, prof) < 0.5
 
 
+
+def test_parse_feature_specs_named_and_singletons():
+    """Named sets and per-feature singletons, the two shapes a hand-picked run needs."""
+    from run_ablation import parse_feature_specs
+    got = parse_feature_specs(["grasp=12,45", "lid=77"], "1167,1140")
+    assert got == {"grasp": [12, 45], "lid": [77],
+                   "only_1167": [1167], "only_1140": [1140]}
+
+
+def test_parse_feature_specs_bare_list_is_custom_and_backward_compatible():
+    from run_ablation import parse_feature_specs
+    assert parse_feature_specs(["12,45,900"], None) == {"custom": [12, 45, 900]}
+    assert parse_feature_specs(None, None) == {}
+    assert parse_feature_specs(None, " ") == {}
+
+
+def test_parse_feature_specs_rejects_collisions_and_empties():
+    from run_ablation import parse_feature_specs
+    for bad in (lambda: parse_feature_specs(["a=1", "a=2"], None),      # duplicate name
+                lambda: parse_feature_specs(["only_5=1"], "5"),          # collides with each
+                lambda: parse_feature_specs(["a="], None),               # no ids
+                lambda: parse_feature_specs(["=1,2"], None)):            # no name
+        try:
+            bad()
+        except SystemExit:
+            continue
+        raise AssertionError("expected SystemExit")
+
+
+def test_singleton_conditions_are_one_feature_each():
+    """The whole point of --ablate-each: never bundle features that carry separate
+    predictions, or the per-feature damage cannot be attributed."""
+    from run_ablation import parse_feature_specs
+    got = parse_feature_specs(None, "1167,1235,1628,1999,1140,1134")
+    assert len(got) == 6
+    assert all(len(v) == 1 for v in got.values()), got
+
+
 def main():
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
