@@ -35,10 +35,14 @@ import json
 import os
 
 import numpy as np
-import torch
 
 from mrvla.attribution import contrast_direction, rms
-from run_attribution import load_sae, sae_encode_full
+
+# torch and the SAE encoder are imported inside main(): `adjusted_breadth` and
+# `select_general_specialist` below are pure numpy and are imported by the CPU-only
+# re-analysis tools (compare_recurrence_groups, join_pathA_pathB, run_ablation's coalition
+# builder), which advertise themselves as needing no GPU and should not need a torch install
+# to run or to be unit-tested. Same deferral run_ablation.py already uses for load_sae.
 
 
 def _ranks(x: np.ndarray) -> np.ndarray:
@@ -102,6 +106,10 @@ def main() -> None:
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--batch-size", type=int, default=4096)
     args = p.parse_args()
+
+    import torch
+
+    from run_attribution import load_sae, sae_encode_full
 
     device = args.device if torch.cuda.is_available() else "cpu"
     os.makedirs(args.out, exist_ok=True)

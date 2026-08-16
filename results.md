@@ -216,10 +216,29 @@ line of caution, not the headline.
   damages *few*. Pending GPU allocation.
 - **Four-suite Path A partial|both table** — fill in A5 with the per-suite numbers.
 - **Signature-entropy control** for B2/explanation #4 — to firm up "specific roles
-  recur more" against the sharpness confound.
-- **`compare_recurrence_groups --target` bug** — `--target` is label-only; must
-  also switch `--rec` to actually change models. Fix before trusting per-suite
-  group comparisons.
+  recur more" against the sharpness confound. Needs `run_causal_recurrence.py` to
+  save the `[F,256]` signature matrix, not just its norms.
+- **`compare_recurrence_groups --target` bug** — *fixed.* `--target` was label-only
+  while `--rec` chose the model, so a mislabelled per-suite table was undetectable.
+  It is now cross-checked against both `--rec` and `--attr` and refuses to run on a
+  mismatch (`--allow-mismatch` to override).
+- **Recurrence reliability is not measured** — and without it the A×B null below
+  cannot be defended against "both measures are too noisy to correlate". Cheapest
+  estimate: `q_cross` recomputed on disjoint halves of the probe frames. See the
+  diagnostics note.
+
+### Diagnostics ready to run (CPU only, on existing artifacts)
+
+`BASE=... ./run_diagnostics.sh` — see `notes/elevation_diagnostics.md` for what each
+one is for and what it converts. In short:
+
+| Tool | Closes |
+|---|---|
+| `ablation_power.py` | The coalition ablation null has no CI, no paired test and no power bound, so it is currently unreportable. Adds paired McNemar, damage intervals, the minimum detectable effect, and nulls for the damage-breadth and attribution-agreement tests. |
+| `permutation_null.py` | A4's +0.493 has no floor. **The negative control the plan prescribed is a no-op** (permuting task labels within a feature leaves the statistic unchanged — LOTO already averages over every held-out task); this implements the two floors that do test something. |
+| `causal_concentration.py` | §A6 claims "concentration and reproducibility of influence" with no number attached. Adds effective feature count, Lorenz/Gini shares, and cross-task top-N overlap vs chance, each against a firing-rate control. |
+| `reliability_ceiling.py` | Attenuation correction. Strengthens Path A to a floor of ≥ +0.581 at reliability 0.72; shows the A×B null needs a recurrence-reliability estimate (r_yy > 0.249 suffices) before it can be claimed. |
+| `split_half_breadth.py` | Breadth reliability — built, never reported; it is the input every correction above needs. |
 
 ---
 

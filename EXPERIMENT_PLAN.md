@@ -359,9 +359,16 @@ This step makes the axis concrete without reintroducing circular labels.
 - **What it answers.** (i) "Show me a general feature" — the reviewer's demand. (ii) The
   §2.6 concession: does structural breadth correspond to a *meaningful* skill, or to an
   input-correlated bookkeeping direction? Exemplar frames are the first evidence either way.
-- **Negative control (cheap, same machinery).** Permute task labels and recompute the A4
-  partial; a "generic causality is trivial" objection predicts it collapses to ≈0 while the
-  real value is +0.493. Run it to convert the verbal rebuttal into a figure.
+- **Negative control (cheap, same machinery).** *Corrected 2026-08 — the control as
+  originally written here is a no-op; see `notes/elevation_diagnostics.md` §2.* Permuting task
+  labels **within a feature** does not collapse the A4 partial, because LOTO already evaluates
+  every fold: permuting column *j* only re-deals the same G (train-PR, held-out) pairs into
+  different folds. Measured, real +0.164 vs permuted +0.164. The valid floors are implemented
+  in `permutation_null.py`: **column shuffle** (permute feature identity within each task row
+  — preserves task marginals and the mechanical within-column link, destroys a feature's
+  identity across tasks; the floor that matters) and **feature shuffle** (permute the held-out
+  vector's feature identity — the estimator floor, must be ≈0). Both call the same
+  `mrvla.attribution.loto_partial_both` that produces the reported number.
 
 Files: `identify_features.py` (rank + exemplar-finding, reuses run_attribution's encoder)
 and `capture_feature_frames.py` (frame extraction + contact sheets, reuses
@@ -428,7 +435,26 @@ DEFERRED (documented, NOT yet implemented — §3.2c replication roadmap):
         + coalition ablation (§3.2a): broad vs narrow degradation; our-metric vs
           firing-metric ranking as the head-to-head behavioural test.
 
+READY TO RUN (CPU-only re-analysis of artifacts already on disk; `BASE=... ./run_diagnostics.sh`)
+        See notes/elevation_diagnostics.md for what each one converts.
+        - permutation_null.py    -- valid floors for the A4 partial (§3.2b, corrected above)
+        - ablation_power.py      -- paired McNemar, damage CIs, and the MINIMUM DETECTABLE
+                                    EFFECT for the ablation runs. The coalition null is
+                                    currently unbounded and therefore unreportable; this is
+                                    what turns it into "damage is below X points".
+        - causal_concentration.py-- puts numbers on the "concentration and reproducibility"
+                                    rebuttal (§A6 of results.md), with firing-rate and
+                                    column-shuffle controls
+        - split_half_breadth.py  -- breadth reliability (built, not yet reported)
+        - reliability_ceiling.py -- attenuation correction; note the A x B null needs a
+                                    RECURRENCE reliability estimate before it can be
+                                    defended at all (the r_yy = 1 substitution bounds the
+                                    wrong way)
+
 BACKLOG (cheap, on existing artifacts, no retraining):
+        - recurrence reliability: q_cross recomputed on disjoint halves of the probe frames
+          (prerequisite for defending the A x B null; no rollouts, no retraining)
+        - signature-entropy control for B2: needs run_causal_recurrence to save S [F,256]
         - Hungarian assignment at scale (unmet §3.1 step-3 commitment)
         - second SAE seed for spatial / object / libero10 (also serves Path B §3.1)
         - characterise the top-recurrence features (the §3.1 positive-outcome follow-up)

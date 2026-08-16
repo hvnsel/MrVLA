@@ -40,6 +40,7 @@ import torch
 from mrvla.attribution import (
     action_logits,
     contrast_direction,
+    loto_partial_both,
     participation_ratio,
     reconstruct,
     rms,
@@ -320,25 +321,11 @@ def main() -> None:
     rho_mag = _spearman(PR[active], mag[active])
     rho_br = _spearman(PR[active], base_rate[active])
 
-    def _partial2(y, x, c1, c2):
-        """Rank-partial of y on x controlling for BOTH c1 and c2 (residualise x and y on
-        the [c1,c2] rank plane, then correlate residuals)."""
-        m = np.isfinite(y) & np.isfinite(x) & np.isfinite(c1) & np.isfinite(c2)
-        if m.sum() < 5:
-            return float("nan")
-        def rk(v):
-            r = np.argsort(np.argsort(v[m])).astype(np.float64); return r - r.mean()
-        ry, rx, rc = rk(y), rk(x), np.stack([rk(c1), rk(c2)], axis=1)
-        # least-squares residualise rx and ry on the two control ranks
-        beta_x, *_ = np.linalg.lstsq(rc, rx, rcond=None)
-        beta_y, *_ = np.linalg.lstsq(rc, ry, rcond=None)
-        ex, ey = rx - rc @ beta_x, ry - rc @ beta_y
-        den = np.sqrt((ex * ex).sum() * (ey * ey).sum())
-        return float((ex * ey).sum() / den) if den > 0 else float("nan")
-
     # leave-one-task-out: does PR on G-1 tasks predict held-out causal importance,
     # beyond magnitude, beyond base rate, and beyond BOTH?
-    loto, loto_p_mag, loto_p_br, loto_p_both = [], [], [], []
+    # `partial | both` -- the headline number -- comes from mrvla.attribution so that the
+    # permutation null (permutation_null.py) scores the identical estimator.
+    loto, loto_p_mag, loto_p_br = [], [], []
     G = len(task_ids)
     for gi in range(G):
         keep = np.arange(G) != gi
@@ -350,7 +337,7 @@ def main() -> None:
             loto.append(_spearman(PR_tr[m], held[m]))
             loto_p_mag.append(_partial_spearman(PR_tr[m], held[m], mag_tr[m]))
             loto_p_br.append(_partial_spearman(PR_tr[m], held[m], base_rate[m]))
-            loto_p_both.append(_partial2(held[m], PR_tr[m], mag_tr[m], base_rate[m]))
+    loto_p_both = [float(v) for v in loto_partial_both(C, base_rate)]
     mean = lambda a: float(np.mean(a)) if a else float("nan")
     # per-fold robustness of the decisive number: a mean over folds can hide a
     # few-big-many-negative split, so report sign consistency and the worst fold.

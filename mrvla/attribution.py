@@ -202,3 +202,64 @@ def participation_ratio(C: np.ndarray) -> np.ndarray:
 def total_magnitude(C: np.ndarray) -> np.ndarray:
     """Sum_g C_j(g): the feature's overall causal importance (the confound PR must beat)."""
     return np.asarray(C, dtype=np.float64).sum(axis=0)
+
+
+# ---------------------------------------------------------------------------
+# the A4 statistic: leave-one-task-out prediction of held-out causal importance
+# ---------------------------------------------------------------------------
+def rank_partial_both(y: np.ndarray, x: np.ndarray, c1: np.ndarray,
+                      c2: np.ndarray) -> float:
+    """Rank-partial correlation of y and x controlling for BOTH c1 and c2.
+
+    Residualises the rank vectors of x and y on the [c1, c2] rank plane by least squares and
+    correlates what is left. This is the estimator behind the headline `partial | both`
+    number: it asks whether breadth predicts held-out causal importance beyond causal
+    magnitude AND beyond base firing rate, the two confounds that killed the firing metrics.
+    """
+    y, x = np.asarray(y, float), np.asarray(x, float)
+    c1, c2 = np.asarray(c1, float), np.asarray(c2, float)
+    m = np.isfinite(y) & np.isfinite(x) & np.isfinite(c1) & np.isfinite(c2)
+    if m.sum() < 5:
+        return float("nan")
+
+    def rk(v):
+        r = np.argsort(np.argsort(v[m])).astype(np.float64)
+        return r - r.mean()
+
+    ry, rx = rk(y), rk(x)
+    rc = np.stack([rk(c1), rk(c2)], axis=1)
+    beta_x, *_ = np.linalg.lstsq(rc, rx, rcond=None)
+    beta_y, *_ = np.linalg.lstsq(rc, ry, rcond=None)
+    ex, ey = rx - rc @ beta_x, ry - rc @ beta_y
+    den = np.sqrt((ex * ex).sum() * (ey * ey).sum())
+    return float((ex * ey).sum() / den) if den > 0 else float("nan")
+
+
+def loto_partial_both(C: np.ndarray, base_rate: np.ndarray) -> np.ndarray:
+    """Per-fold `partial | both` over leave-one-task-out folds. C is [G, F]; returns [<=G].
+
+    For each held-out task g: recompute breadth (PR) and causal magnitude on the REMAINING
+    tasks only -- recomputing both is what keeps the held-out task out of the confound
+    controls as well as out of the predictor -- then rank-partial the training breadth
+    against the held-out task's causal importance, controlling training magnitude and base
+    rate. Folds with too few usable features are dropped rather than returned as NaN.
+
+    Factored out of `run_attribution.py` so that re-analyses (permutation nulls, per-suite
+    replication) score the identical estimator instead of a re-implementation that might
+    drift from it.
+    """
+    C = np.asarray(C, dtype=np.float64)
+    base_rate = np.asarray(base_rate, dtype=np.float64)
+    G = C.shape[0]
+    vals: list[float] = []
+    for gi in range(G):
+        keep = np.arange(G) != gi
+        PR_tr = participation_ratio(C[keep])
+        mag_tr = total_magnitude(C[keep])
+        held = C[gi]
+        m = (mag_tr > 0) & np.isfinite(PR_tr)
+        if m.sum() > 4:
+            v = rank_partial_both(held[m], PR_tr[m], mag_tr[m], base_rate[m])
+            if np.isfinite(v):
+                vals.append(v)
+    return np.array(vals, dtype=np.float64)
