@@ -473,6 +473,36 @@ across m: **0.244, 0.269, 0.272, 0.271, 0.268, 0.264, 0.259, 0.253**.
 
 **The one-to-one null was not a fragmentation artefact.**
 
+### P7a-bis. Replicated with each suite as the target
+
+Re-run with spatial, object and libero-10 as the target model. The three new suites have no
+second-seed SAE, so retention is unavailable there — but the claim being replicated is the
+*slope* comparison, which needs no ceiling:
+
+| target | general-decile slope | specialist-decile slope | difference | random-floor slope | general − floor |
+|---|---|---|---|---|---|
+| goal | +0.3053 | +0.2987 | +0.0066 | +0.3220 | **−0.0167** |
+| spatial | +0.3040 | +0.2947 | +0.0093 | +0.3213 | **−0.0173** |
+| object | +0.3049 | +0.2985 | +0.0064 | +0.3218 | **−0.0169** |
+| libero-10 | +0.3166 | +0.3102 | +0.0064 | +0.3219 | **−0.0053** |
+
+Two things hold in all four suites, and the second is the stronger statement:
+
+1. The general-vs-specialist slope difference is **+0.006 to +0.009** — about 2–3% of the slope
+   itself. Splitting does not preferentially help broad features anywhere.
+2. **Every breadth decile in every suite rises with m more slowly than a random dictionary
+   does.** The random-floor slope is +0.322 in all four suites (remarkably stable), and no
+   decile reaches it. Coalition matching does not merely fail to help real dictionaries — real
+   dictionaries gain *less* from it than random ones do, because the floor has more room to
+   improve from a lower starting point.
+
+The m=1 levels replicate the published direction in 3 of 4 suites (general deciles sit below
+specialist ones in goal, spatial and object). **libero-10 is the exception**: its most-specialist
+decile is the *lowest* at m=1 (0.2484 vs 0.2519 for the most general), so the "generals recur
+less" ordering does not hold there. libero-10 is also the suite with the highest anti-aligned
+fraction against every partner (0.25–0.37), and the one with the extreme concentration flagged in
+P2. It behaves differently on several axes and is worth treating separately.
+
 ### P7a. The finding reproduces at the level of role inventories
 
 Clustering each model's signatures and matching inventories by Hungarian assignment (not greedy —
@@ -567,6 +597,7 @@ published numbers. **That should be a deliberate decision before publication, no
 | Breadth is a stable feature property | assumed | **reliability 0.27–0.47 — population yes, feature-level weakly** |
 | Recurrence ≠ generality (feature level) | asserted | **not defensible without recurrence reliability (need > 0.494)** |
 | Recurrence ≠ generality (role level) | not tested | **holds: −0.54 to −0.81, survives coalition matching** |
+| Splitting explains the Path B null | untested, plausible | **falsified in all four suites: every decile rises slower than the random floor** |
 | Rollout ablation tests coded features | assumed | **71.5% of its effect is on decisions the feature never fired on** |
 
 ---
@@ -581,11 +612,16 @@ published numbers. **That should be a deliberate decision before publication, no
 - **Four-suite Path A partial|both table** — fill in A5 with the per-suite numbers.
 ### Blocking — asymmetries a reviewer will see
 
-- **A4 and B1 are goal-only.** Path A replicates 4/4 (P1), but P7's "general roles
-  recur less, and it is not a splitting artefact" rests on goal as the target model,
-  and P5's channel result on goal alone. Running `inventory_recurrence.py` and
-  `inventory_clusters.py` with `--target spatial|object|10` is minutes of CPU and no
-  new code. Channels for the other three suites is three GPU jobs.
+- **B1 is goal-only.** Path A replicates 4/4 (P1) and the A4 m-sweep now does too
+  (P7a-bis), but P5's channel result rests on goal alone. Three GPU jobs
+  (`run_channels.slurm spatial|object|10`). Lower priority than it looks: B1 is a
+  negative result, so a single-suite negative is a weaker claim but also a smaller one.
+- **Second-seed SAEs for spatial / object / libero-10.** Without them the three new
+  A4 targets report slopes but no chance-corrected retention, so "recurrence retains
+  ~a quarter" is a goal-only number even though the slope conclusion is four-suite.
+  One `run_sae_seed1.slurm` per suite.
+- **`inventory_clusters.py` for the other three targets** — the role-level correlation
+  (−0.54 to −0.81) is still goal-only. Minutes of CPU.
 
 ### Deferred — recorded, not blocking
 
