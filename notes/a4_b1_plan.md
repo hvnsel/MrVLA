@@ -35,7 +35,7 @@ lives in. Both run on artifacts already collected.
 | 1 | `mrvla/readout.py` | **done**, tested against brute force |
 | 2 | `mrvla/channels.py` + `run_channel_attribution.py` | **done**, tested |
 | 3 | `analyze_channels.py` | **done**, tested |
-| 4 | `inventory_recurrence.py` | not started |
+| 4 | `inventory_recurrence.py` | **done**, tested |
 | 5 | `inventory_clusters.py` | not started |
 
 ### Step 0 — the A4 gate (`action_space_geometry.py`)
@@ -151,11 +151,38 @@ features' curve rises steeply with *m* while the specialists' stays flat, becaus
 were already atomic at m=1. Diffuse, high-usage general features are exactly the ones expected to
 fragment, so splitting alone could have manufactured the entire "generals recur less" result.
 
-Nulls, all *m*-matched (non-negotiable — cos rises with *m* mechanically): random decoders
+Nulls, all *m*-matched (non-negotiable — cos rises with *m* mechanically, and the null must
+also match the dictionary SIZE so the best-of-F selection effect is matched): random decoders
 through the shared head; the same-model different-seed floor as the ceiling, giving
 chance-corrected retention in the `ret_cc` style of §2.4; and the base-model inheritance control.
-Report per-breadth-decile curves, and rerun rank-residualised on signature sharpness (open thread
-#3) since cosine matching may favour low-entropy signatures.
+Reports per-breadth-decile curves and saves signature sharpness so the decile contrast can be
+rank-residualised on it (open thread #4) — cosine matching plausibly favours low-entropy
+signatures, and specialists have sharper ones.
+
+**Two biases, pointing opposite ways, both stated in the code.** (i) Coefficients are
+unrestricted, but TopK codes are non-negative — model B can add `w_j`, never subtract it — so
+unrestricted projection *overstates* expressibility. A flat curve under an upper bound is
+genuinely flat, so the null conclusion is safe; a rising curve needs the `--positive-only`
+follow-up before it is believed. (ii) Greedy matching pursuit is suboptimal: on planted data
+where three features provably span the target, greedy alone recovers only ~0.82–0.98 of it, so
+the curve *understates* expressibility. That means a flat curve is weaker evidence of absence
+than it looks. `n_restarts` narrows the second gap by re-running with each of the top-r first
+picks and keeping the elementwise best per *m* — elementwise, not the best whole run, because
+m=1 must stay exactly equal to the one-to-one `|max cos|` for comparability. Restarts can only
+help, never hurt, but strict improvement is not guaranteed and is not claimed.
+
+**The sign discontinuity.** `run_causal_recurrence.best_match_cosine` takes the *signed* max;
+projection onto a span does not, since a span containing `−v` expresses `v`. So m=1 is
+`|max cos|`, not the published signed value, and the two differ exactly on features whose best
+match is anti-aligned. `anti_aligned_fraction` measures how often that happens and the published
+signed q is printed beside m=1, so the size of the discontinuity is reported rather than
+assumed.
+
+**A crowding failure worth knowing about, pinned by test.** In a cramped ambient space with a
+dictionary large relative to it, greedy matching latches onto spurious directions and m=1 starts
+*higher* than it should — a healthy-looking match that is dimension counting rather than
+correspondence. This is exactly the regime Step 0 screens for, and it is why the gate runs
+first.
 
 ### Step 5 — `inventory_clusters.py`
 
