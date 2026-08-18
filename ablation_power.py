@@ -32,8 +32,11 @@ This script adds the missing statistics, all on files already on disk. No GPU, n
    not resolve, and that is the honest reading.
 
 5. A NULL FOR THE ATTRIBUTION-AGREEMENT TEST. corr(per-task damage, per-task causal profile)
-   is compared against a task-permutation null and given a task-level bootstrap interval,
-   since it is a correlation over G = 10 points and an uncalibrated r there means little.
+   is compared against a task-permutation null and given a TWO-LEVEL bootstrap interval. Two
+   levels because at 20 episodes each per-task damage carries a standard error near 0.16 --
+   larger than most of the damages being correlated -- so an interval that resamples only tasks
+   treats noise as data and will report a confident correlation between two noise vectors. The
+   bootstrap resamples tasks and then matched episode pairs within each task.
 
 Usage
 -----
@@ -151,18 +154,29 @@ def damage_pr_null(base_rate: np.ndarray, n_ep: np.ndarray, mean_damage: float,
     return sims[np.isfinite(sims)]
 
 
-def corr_permutation_p(damage: np.ndarray, profile: np.ndarray, n_perm: int = 20000,
-                       seed: int = 0) -> tuple[float, float, tuple[float, float]]:
+def corr_permutation_p(damage: np.ndarray, profile: np.ndarray,
+                       paired: dict | None = None, n_perm: int = 20000,
+                       n_boot: int = 4000, seed: int = 0) -> tuple[float, float, tuple]:
     """(r, one-sided permutation p, bootstrap CI) for corr(per-task damage, causal profile).
 
-    The permutation shuffles which task each causal profile entry belongs to, which is
-    exactly the null "attribution does not know where damage lands". The bootstrap resamples
-    TASKS, so the interval reflects the real unit of replication (G = 10), not the episode
-    count -- an interval computed over episodes would be spuriously tight.
+    The permutation shuffles which task each causal profile entry belongs to, which is exactly
+    the null "attribution does not know where damage lands".
+
+    THE INTERVAL IS TWO-LEVEL, and it has to be. A bootstrap that resamples only TASKS treats
+    each task's damage as a fixed number, when at 20 episodes a per-task damage carries a
+    standard error near 0.16 -- larger than most of the damages being correlated. Such an
+    interval is far too tight and will report a confident correlation between two noise vectors.
+    So when `paired` is supplied (task -> (baseline successes, condition successes) as matched
+    0/1 arrays), the bootstrap resamples tasks AND then resamples matched episode pairs within
+    each drawn task, recomputing damage from the resampled pairs. Both sources of variation
+    propagate, and the pairing is preserved because episodes are drawn as pairs.
+
+    Without `paired` it falls back to the task-only interval, which is reported as such.
     """
     d = np.asarray(damage, dtype=np.float64)
     p = np.asarray(profile, dtype=np.float64)
     m = np.isfinite(d) & np.isfinite(p)
+    keep = np.where(m)[0]
     d, p = d[m], p[m]
     if d.size < 3:
         return float("nan"), float("nan"), (float("nan"), float("nan"))
@@ -179,12 +193,26 @@ def corr_permutation_p(damage: np.ndarray, profile: np.ndarray, n_perm: int = 20
     null = null[np.isfinite(null)]
     p_val = float((null >= r).mean()) if null.size and np.isfinite(r) else float("nan")
 
+    pairs = None
+    if paired is not None:
+        pairs = [paired.get(int(t)) for t in keep]
+        if any(v is None or len(v[0]) < 2 for v in pairs):
+            pairs = None
+
     boot = []
-    for _ in range(4000):
+    for _ in range(n_boot):
         idx = rng.integers(0, d.size, d.size)
         if np.unique(idx).size < 3:
             continue
-        v = r_of(d[idx], p[idx])
+        if pairs is None:
+            v = r_of(d[idx], p[idx])
+        else:
+            dd = np.empty(idx.size)
+            for k, t in enumerate(idx):
+                b_arr, c_arr = pairs[t]
+                e = rng.integers(0, b_arr.size, b_arr.size)   # matched pairs, drawn together
+                dd[k] = b_arr[e].mean() - c_arr[e].mean()
+            v = r_of(dd, p[idx])
         if np.isfinite(v):
             boot.append(v)
     ci = ((float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5)))
@@ -333,12 +361,22 @@ def main() -> None:
 
         prof = info.get(c, {}).get("per_task_profile")
         if prof and np.isfinite(dmg).sum() >= 3:
+            # matched 0/1 arrays per task, so the interval can propagate episode-level noise
+            paired = {}
+            for t in range(n_tasks):
+                ks = sorted(set(base) & set(cond) & {(t, e) for (tt, e) in base if tt == t})
+                if len(ks) >= 2:
+                    paired[t] = (np.array([base[k] for k in ks], dtype=np.float64),
+                                 np.array([cond[k] for k in ks], dtype=np.float64))
             r, p_perm, ci = corr_permutation_p(dmg, np.asarray(prof, dtype=np.float64),
-                                               seed=args.seed)
+                                               paired=paired or None, seed=args.seed)
             entry["corr_damage_vs_attribution"] = {"r": r, "perm_p_one_sided": p_perm,
-                                                   "bootstrap_ci": list(ci)}
+                                                   "bootstrap_ci": list(ci),
+                                                   "bootstrap_two_level": bool(paired)}
+            width = ci[1] - ci[0] if np.isfinite(ci[0]) and np.isfinite(ci[1]) else float("nan")
+            note = "  (spans most of [-1,1]: uninformative)" if width > 1.2 else ""
             print(f"  {'':24s} corr(damage, attribution)={r:+.3f}  "
-                  f"perm p={p_perm:.3f}  boot CI[{ci[0]:+.2f}, {ci[1]:+.2f}]")
+                  f"perm p={p_perm:.3f}  boot CI[{ci[0]:+.2f}, {ci[1]:+.2f}]{note}")
 
     # ---------------- per-task paired table ----------------
     if args.per_task:

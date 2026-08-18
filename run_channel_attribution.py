@@ -303,16 +303,43 @@ def main() -> None:
     print("[chan] are not equally reliable; a low-sufficiency channel needs discounting.")
     for s_i in range(S_SLOTS):
         flag = "" if suff_recon[s_i] >= 0.80 else "   <- below the 0.80 gate bar"
+        if suff_feat[s_i] < 0.15:
+            flag += "   <- features contribute ~NOTHING; this channel is the bias term"
         print(f"[chan]   {names[s_i]:8s} recon={suff_recon[s_i]:.4f}  "
               f"features_only={suff_feat[s_i]:.4f}  n={suff_n[s_i]}{flag}")
+    # A CAVEAT ON LOW-ENTROPY CHANNELS. Both the true margin and the bias term are functions of
+    # the EMITTED token, so on a channel that emits only a couple of distinct tokens (the
+    # gripper) a high `recon` slope can be partly tautological: the constant term tracks the
+    # margin by tracking which token was emitted, without explaining why that token won. Read a
+    # high recon with a near-zero features_only as "this channel is a default, not a decision",
+    # and check it against the transition-conditioned numbers, which restrict to the decisions
+    # where the command actually changes.
+    if np.nanmin(suff_feat) < 0.15:
+        worst_i = int(np.nanargmin(suff_feat))
+        print(f"[chan]   NOTE {names[worst_i]} recovers its margin almost entirely from the "
+              f"mu+b_pre bias.")
+        print("[chan]   On a near-binary channel that is partly tautological (both the margin "
+              "and the")
+        print("[chan]   bias depend on the emitted token), so lean on the transition-conditioned")
+        print("[chan]   statistics in analyze_channels.py before concluding anything about it.")
     spread = float(np.nanmax(suff_recon) - np.nanmin(suff_recon))
     if spread > 0.15:
         print(f"[chan]   SPREAD {spread:.3f} across channels: cross-channel comparisons must be")
         print("[chan]   weighted or caveated -- the decomposition is not equally valid everywhere.")
 
-    print("\n[chan] mean causal SHARE per channel (comparable across slots):")
-    for s in range(S_SLOTS):
-        print(f"[chan]   {names[s]:8s} {C_shr[s].sum(axis=0).mean():.5f}")
+    # NB do NOT summarise C_slot_share by summing over features: decision_shares normalises
+    # every decision to sum to 1 across features, so sum-over-tasks-mean-over-features is
+    # G / F for every slot by construction and says nothing. The share matrix is comparable
+    # PER FEATURE across slots (that is its purpose, and what analyze_channels.py uses); the
+    # cross-CHANNEL split of causal mass has to come from the absolute matrix.
+    tot_abs = C_abs.sum()
+    print("\n[chan] causal mass by channel (share of the run's total |phi|, ABSOLUTE):")
+    for s_i in range(S_SLOTS):
+        frac = C_abs[s_i].sum() / tot_abs if tot_abs > 0 else float("nan")
+        print(f"[chan]   {names[s_i]:8s} {frac:.4f}")
+    print("[chan]   (absolute mass is NOT comparable across slots on its own -- u_contrast norm")
+    print("[chan]   depends on where the emitted bin sits. analyze_channels.py does the")
+    print("[chan]   per-feature share comparison that controls for it.)")
     print(f"[chan] channel PR (share) mean {np.nanmean(pr_chan_share):.2f} of {S_SLOTS}")
     for mode in modes:
         tot = flips[mode]["flip"].sum() / max(flips[mode]["n"].sum(), 1)

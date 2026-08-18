@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Scripts that are EXECUTED on the cluster must be LF regardless of the checkout platform.
+# sbatch and bash both refuse CRLF ("Batch script contains DOS line breaks"), and the failure
+# only shows up after the file has been copied over, not at checkout time. Python tolerates
+# CRLF, which is why .py files get away with it and these do not.
+*.sh    text eol=lf
+*.slurm text eol=lf
