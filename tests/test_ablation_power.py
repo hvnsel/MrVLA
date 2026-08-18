@@ -104,6 +104,71 @@ def test_damage_pr_null_handles_degenerate_input():
     assert damage_pr_null(np.array([np.nan]), np.array([0]), 0.05, 10).size == 0
 
 
+def test_two_level_bootstrap_rescues_a_spuriously_confident_correlation():
+    """THE test. Damage here is PURE NOISE -- baseline and condition draw from the same rate --
+    yet by chance it correlates strongly with the causal profile, and the task-only interval
+    confidently excludes zero. That is exactly the failure mode: an interval that resamples
+    tasks while treating each task's damage as a fixed number reports a confident correlation
+    between two noise vectors. Propagating episode noise must put zero back inside.
+
+    Note the correction does NOT simply widen intervals. Extra noise in x attenuates corr(x, y)
+    toward zero, which concentrates the bootstrap replicates, so a two-level interval can be
+    NARROWER while being centred nearer zero. Width is the wrong criterion; coverage is the
+    right one, and that is what is asserted.
+    """
+    rng = np.random.default_rng(58)
+    n_tasks, n_ep = 10, 20
+    profile = rng.random(n_tasks)
+    paired, damage = {}, np.zeros(n_tasks)
+    for t in range(n_tasks):
+        b = (rng.random(n_ep) < 0.8).astype(float)
+        c = (rng.random(n_ep) < 0.8).astype(float)       # identical rates: no real damage
+        paired[t] = (b, c)
+        damage[t] = b.mean() - c.mean()
+    r, _, ci_task = corr_permutation_p(damage, profile, paired=None, n_perm=200,
+                                       n_boot=1200, seed=1)
+    assert abs(r) > 0.6, "fixture no longer produces a spurious correlation"
+    assert ci_task[0] * ci_task[1] > 0, "task-only interval should (wrongly) exclude zero here"
+    _, _, ci_two = corr_permutation_p(damage, profile, paired=paired, n_perm=200,
+                                      n_boot=1200, seed=1)
+    assert ci_two[0] <= 0 <= ci_two[1], "two-level interval must put zero back inside"
+
+
+def test_two_level_bootstrap_on_pure_noise_is_uninformative():
+    """The case that motivated the fix: damage that is pure sampling noise must produce an
+    interval spanning most of [-1, 1], not a confident correlation."""
+    rng = np.random.default_rng(6)
+    n_tasks, n_ep = 10, 20
+    profile = rng.random(n_tasks)
+    paired, damage = {}, np.zeros(n_tasks)
+    for t in range(n_tasks):
+        b = (rng.random(n_ep) < 0.8).astype(float)
+        c = (rng.random(n_ep) < 0.8).astype(float)      # NO real damage at all
+        paired[t] = (b, c)
+        damage[t] = b.mean() - c.mean()
+    _, _, ci = corr_permutation_p(damage, profile, paired=paired, n_perm=500,
+                                  n_boot=2000, seed=0)
+    assert (ci[1] - ci[0]) > 1.0, "an interval on noise must not look confident"
+
+
+def test_two_level_bootstrap_still_finds_a_real_effect():
+    """It must widen intervals without destroying power: a damage profile that genuinely
+    tracks attribution should still exclude zero."""
+    rng = np.random.default_rng(7)
+    n_tasks, n_ep = 10, 200                     # more episodes -> episode noise shrinks
+    profile = rng.random(n_tasks)
+    paired, damage = {}, np.zeros(n_tasks)
+    for t in range(n_tasks):
+        b = (rng.random(n_ep) < 0.9).astype(float)
+        c = (rng.random(n_ep) < 0.9 - 0.5 * profile[t]).astype(float)
+        paired[t] = (b, c)
+        damage[t] = b.mean() - c.mean()
+    r, p_perm, ci = corr_permutation_p(damage, profile, paired=paired, n_perm=2000,
+                                       n_boot=2000, seed=0)
+    assert r > 0.8 and p_perm < 0.01
+    assert ci[0] > 0
+
+
 def test_corr_permutation_p_is_calibrated():
     rng = np.random.default_rng(0)
     profile = rng.random(10)
