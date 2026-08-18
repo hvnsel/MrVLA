@@ -20,7 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from action_space_geometry import (  # noqa: E402
     array_digest, bin_order_note, compare_heads, contrast_center, effective_rank,
-    random_subspace_cosine, rank_at_energy, recommend_branch, spectrum_report,
+    head_divergence_impact, random_subspace_cosine, rank_at_energy, recommend_branch,
+    spectrum_report,
 )
 
 
@@ -149,6 +150,49 @@ def test_bin_order_note_flags_the_reversed_axis():
     assert note["n_bins"] == 256
     assert note["ascending_ids"]
     assert note["row_axis_is_reversed_vs_bin_index"]
+
+
+def test_head_divergence_impact_is_one_for_an_identical_head():
+    """The calibration point: pushing a decoder through the SAME head twice must give cos 1."""
+    rng = np.random.default_rng(20)
+    d = 48
+    W_dec = rng.standard_normal((30, d))
+    W = rng.standard_normal((24, d))
+    g = np.abs(rng.normal(1.0, 0.1, d))
+    heads = {"a": {"W_U_act": W, "g": g}, "b": {"W_U_act": W.copy(), "g": g.copy()}}
+    imp = head_divergence_impact(W_dec, heads, "a")
+    assert abs(imp["b"]["mean_cosine"] - 1.0) < 1e-9
+    assert imp["b"]["n_features"] == 30
+
+
+def test_head_divergence_impact_falls_as_the_head_diverges():
+    """The number that makes `max |diff|` interpretable: a raw weight difference means nothing
+    until it is expressed as movement in the signature the analysis actually compares."""
+    rng = np.random.default_rng(21)
+    d = 48
+    W_dec = rng.standard_normal((40, d))
+    W = rng.standard_normal((24, d))
+    g = np.abs(rng.normal(1.0, 0.1, d))
+    prev = 1.0
+    for eps in (0.01, 0.1, 0.5):
+        heads = {"a": {"W_U_act": W, "g": g},
+                 "b": {"W_U_act": W + eps * rng.standard_normal(W.shape), "g": g}}
+        cos = head_divergence_impact(W_dec, heads, "a")["b"]["mean_cosine"]
+        assert cos < prev
+        prev = cos
+    assert prev < 0.95           # a large head change really does move the signature
+
+
+def test_head_divergence_reports_the_tail_not_just_the_mean():
+    """Some features can be far more sensitive than average; a mean alone would hide them."""
+    rng = np.random.default_rng(22)
+    d = 48
+    W = rng.standard_normal((24, d))
+    g = np.abs(rng.normal(1.0, 0.1, d))
+    heads = {"a": {"W_U_act": W, "g": g},
+             "b": {"W_U_act": W + 0.2 * rng.standard_normal(W.shape), "g": g}}
+    imp = head_divergence_impact(rng.standard_normal((200, d)), heads, "a")["b"]
+    assert imp["min_cosine"] <= imp["p05_cosine"] <= imp["mean_cosine"]
 
 
 if __name__ == "__main__":

@@ -254,6 +254,36 @@ def bin_order_note(act_ids: np.ndarray) -> dict:
                     "treating the bin axis as ordered"}
 
 
+def head_divergence_impact(W_dec: np.ndarray, heads: dict, ref: str) -> dict:
+    """How much does using the WRONG model's head perturb a signature?
+
+    `max |diff|` on the unembedding is not interpretable on its own -- what matters is whether
+    the difference moves the quantity A4 actually compares. So push ONE decoder through every
+    model's head and report the per-feature cosine against the reference head's signature.
+
+    Near 1.0: the heads are interchangeable and a shared-head shortcut would have been harmless.
+    Materially below 1.0: signatures must be computed through each model's own head, and any
+    analysis that shared one head was comparing through mismatched linear maps.
+    """
+    from run_causal_recurrence import causal_signature
+    W_ref, g_ref = heads[ref]["W_U_act"], heads[ref]["g"]
+    S_ref = causal_signature(np.asarray(W_dec, float), np.asarray(W_ref, float),
+                             np.asarray(g_ref, float), center=True)
+    n_ref = np.linalg.norm(S_ref, axis=1)
+    out = {}
+    for name, h in heads.items():
+        if name == ref:
+            continue
+        S = causal_signature(np.asarray(W_dec, float), np.asarray(h["W_U_act"], float),
+                             np.asarray(h["g"], float), center=True)
+        n = np.linalg.norm(S, axis=1)
+        ok = (n_ref > 0) & (n > 0)
+        cos = (S_ref[ok] * S[ok]).sum(axis=1) / (n_ref[ok] * n[ok])
+        out[name] = {"mean_cosine": float(cos.mean()), "min_cosine": float(cos.min()),
+                     "p05_cosine": float(np.percentile(cos, 5)), "n_features": int(ok.sum())}
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -278,6 +308,7 @@ def main() -> None:
         heads[name]["_path"] = path
 
     results: dict = {"models": {}}
+    _W_dec_cache: list = []      # first loaded decoder, reused by the head-divergence check
 
     first = next(iter(heads))
     W_U_act = np.asarray(heads[first]["W_U_act"], dtype=np.float64)
@@ -320,6 +351,8 @@ def main() -> None:
             from run_attribution import load_sae
             _We, W_dec_t, _b, _k, ck = load_sae(path, args.layer)
             W_dec = W_dec_t.detach().float().cpu().numpy()
+            if not _W_dec_cache:
+                _W_dec_cache.append(W_dec)
             sig = signature_spectrum(W_dec, W_U_act, heads[first]["g"])
             results["signature_spectra"][name] = {"sae": ck, **sig}
             print(f"\n[geom] SIGNATURE SPACE actually occupied by {name}'s {sig['n_features']} "
@@ -347,16 +380,43 @@ def main() -> None:
               f"({', '.join(heads)}):")
         for k, ok in cmp["identical"].items():
             diff = cmp["max_abs_diff"].get(k)
-            extra = f"  (max |diff| = {diff:.3g})" if diff is not None else ""
+            extra = ""
+            if diff is not None:
+                ref = np.asarray(heads[first].get(k, []), dtype=np.float64)
+                scale = float(np.abs(ref).std()) if ref.size else float("nan")
+                rel = diff / scale if scale > 0 else float("nan")
+                extra = f"  (max |diff| = {diff:.3g}, {rel:.2f}x the entry sd)"
             print(f"[geom]   {k:10s} identical: {'YES' if ok else 'NO'}{extra}")
         if all(cmp["identical"].values()):
             print("[geom]   -> the 256-bin output space is LITERALLY shared. Cross-model "
                   "signature\n[geom]      comparison carries no alignment ambiguity, and every "
                   "difference between\n[geom]      models' signatures comes from W_dec alone.")
         else:
-            print("[geom]   -> heads DIFFER. Every cross-model signature number needs an "
-                  "alignment step\n[geom]      that does not currently exist. Resolve this "
-                  "before running A4.")
+            print("[geom]   -> heads DIFFER, so a shared-head shortcut is invalid: each model's")
+            print("[geom]      decoder must be pushed through ITS OWN head. The 256 action bins")
+            print("[geom]      still mean the same commanded action in every model, so comparing")
+            print("[geom]      effects-on-bins across models remains well defined -- it is the")
+            print("[geom]      LINEAR MAP that differs, not the semantic space.")
+            if "signature_spectra" in results:
+                impact = head_divergence_impact(_W_dec_cache[0], heads, first)
+                results["head_divergence_impact"] = impact
+                print("[geom]   how much does the wrong head perturb a signature? (same decoder,")
+                print(f"[geom]   other models' heads vs {first}'s):")
+                worst = 1.0
+                for name, v in impact.items():
+                    print(f"[geom]     {name:10s} mean cos {v['mean_cosine']:.4f}   "
+                          f"5th pct {v['p05_cosine']:.4f}   min {v['min_cosine']:.4f}")
+                    worst = min(worst, v["mean_cosine"])
+                if worst > 0.99:
+                    print("[geom]   -> the perturbation is cosmetic; per-model heads are still")
+                    print("[geom]      correct, but results would barely move either way.")
+                else:
+                    print("[geom]   -> the perturbation is MATERIAL. Any analysis that shared one")
+                    print("[geom]      head compared through mismatched maps; re-run with per-model")
+                    print("[geom]      --head arguments.")
+            else:
+                print("[geom]      Pass --sae to measure how much the difference actually moves a")
+                print("[geom]      signature (the max |diff| above is not interpretable alone).")
 
     for name, h in heads.items():
         results["models"][name] = {"path": h["_path"],
