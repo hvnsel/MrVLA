@@ -488,6 +488,10 @@ General-dominated *roles* match across models worse than specialist-dominated on
 The two independent methods agree on magnitude: cross-model recurrence retains ~**a quarter** of
 what an SAE seed change retains (m-sweep 0.24–0.27, clusters 0.19–0.28).
 
+*Ceiling check.* Retention divides by the same-model different-seed match, so a seed SAE trained
+for a different number of epochs would bias it. Both goal SAEs are at 250 epochs, so the ceiling
+is a like-for-like seed comparison and the retention figures stand as reported.
+
 This also blunts the P4 reliability objection for this claim: it applied to a feature-level
 correlation measured at reliability 0.363, whereas each point here aggregates 64–256 features.
 
@@ -575,22 +579,36 @@ published numbers. **That should be a deliberate decision before publication, no
   damages *many* tasks (high damage participation ratio); specialist removal
   damages *few*. Pending GPU allocation.
 - **Four-suite Path A partial|both table** — fill in A5 with the per-suite numbers.
-- **Signature-entropy control** for B2/explanation #4 — the sharpness confound.
-  `inventory_recurrence.py` now saves per-feature signature sharpness alongside the
-  m-sweep, so the decile contrast can be rank-residualised on it without a re-run.
-- **Recurrence reliability is still unmeasured** (P4). It is what decides whether
-  the *feature-level* A×B null stands; the role-level version (P7a) does not depend
-  on it. Cheapest estimate: recompute `q_cross` on disjoint halves of the probe
-  frames and correlate the two rankings. No rollouts, no retraining.
-- **The tie defect in `_ranks` is open** (P9). 10.3% of goal's `base_rate` values are
-  tied and each block gets an arbitrary index-ordering, inside the ranking that
-  selects every ablation and steering target. Fixing it moves published numbers, so
-  it needs to be a deliberate call.
-- **Re-size the ablation** if it is run again: 79 episodes/task to detect 5 points
-  (P3), and select targets by split-half-stable breadth rather than a single fit (P4).
-- **Explain the sliced-Wasserstein anomaly** (P7b): random dictionaries sit closer to
-  goal's signature distribution than any real model does.
-- **Channels for the other three suites** — goal only so far (P5).
+### Blocking — asymmetries a reviewer will see
+
+- **A4 and B1 are goal-only.** Path A replicates 4/4 (P1), but P7's "general roles
+  recur less, and it is not a splitting artefact" rests on goal as the target model,
+  and P5's channel result on goal alone. Running `inventory_recurrence.py` and
+  `inventory_clusters.py` with `--target spatial|object|10` is minutes of CPU and no
+  new code. Channels for the other three suites is three GPU jobs.
+
+### Deferred — recorded, not blocking
+
+- **Recurrence reliability is unmeasured** (P4). Decides whether the *feature-level*
+  A×B null stands; the role-level result (P7a) does not depend on it, so this
+  upgrades a caveat rather than unblocking a claim. Cheapest estimate: recompute
+  `q_cross` on disjoint halves of the probe frames and correlate the two rankings.
+- **The tie defect in `_ranks`** (P9). Real (10.3% of goal's `base_rate` tied) but
+  second-order: it perturbs ordering *within* tied blocks of a ranking whose
+  population-level behaviour is what every published claim rests on. Fixing it moves
+  numbers, so it is a deliberate pre-publication call, not a bug to patch in passing.
+- **libero-10's `n_eff` = 9.6** (P2) — extreme, control says real, wants an eyeball.
+- **The sliced-Wasserstein anomaly** (P7b) — random dictionaries sit closer to goal's
+  signature distribution than any real model does. Unexplained.
+- **Signature-entropy control** for B2/explanation #4. `inventory_recurrence.py`
+  already saves per-feature sharpness, so this is a re-analysis when wanted.
+
+### A separate decision, not tidying
+
+- **Re-sizing the ablation.** 79 episodes/task to detect 5 points (P3), with targets
+  selected by split-half-stable breadth (P4). This is the difference between a
+  *bounded null* and a positive behavioural result, and it is a real GPU spend — not
+  a loose end.
 - **`compare_recurrence_groups --target` bug** — *fixed.* `--target` was label-only
   while `--rec` chose the model, so a mislabelled per-suite table was undetectable.
   It is now cross-checked against both `--rec` and `--attr` and refuses to run on a
