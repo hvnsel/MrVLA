@@ -153,6 +153,38 @@ def test_common_language_effect_endpoints():
     assert np.isnan(common_language_effect(np.array([]), np.array([1.0])))
 
 
+def test_flip_rates_given_fires_is_a_different_quantity():
+    """The confound the fires-conditional column exists to remove. Two features with IDENTICAL
+    decisiveness when they fire, but one firing ten times as often, look ten times more
+    'necessary' over all decisions and identical given they fire. Over-all rates rank features
+    by base rate; that is the confound that killed the firing metrics in section 2.2, reappearing
+    in a new place."""
+    chan = {
+        # rows: busy feature, rare feature. Both flip 50% of the decisions they fire on.
+        "flip_projection_flip": np.array([[50.0], [5.0]]),
+        "flip_projection_n": np.array([[1000.0], [1000.0]]),
+        "flip_projection_flip_active": np.array([[50.0], [5.0]]),
+        "flip_projection_n_active": np.array([[100.0], [10.0]]),
+        "flip_projection_flip_trans": np.array([[0.0], [0.0]]),
+        "flip_projection_n_trans": np.array([[0.0], [0.0]]),
+        "flip_projection_flip_active_trans": np.array([[0.0], [0.0]]),
+        "flip_projection_n_active_trans": np.array([[0.0], [0.0]]),
+    }
+    rate_all, _ = flip_rates(chan, "projection")
+    assert rate_all[0, 0] == 10 * rate_all[1, 0]        # over all decisions: a 10x illusion
+    rate_act, n_act = flip_rates(chan, "projection", active_only=True)
+    assert abs(rate_act[0, 0] - rate_act[1, 0]) < 1e-12  # given they fire: identical
+    assert n_act[0, 0] == 100 and n_act[1, 0] == 10
+
+
+def test_flip_rates_falls_back_when_the_counters_are_absent():
+    """Older npz files predate the fires-conditional counters; asking for them must return an
+    empty result rather than raising, so the report can say so and carry on."""
+    chan = {"flip_projection_flip": np.array([[1.0]]), "flip_projection_n": np.array([[2.0]])}
+    rate, n = flip_rates(chan, "projection", active_only=True)
+    assert rate.size == 0 and n.size == 0
+
+
 def test_flip_rates_reads_the_saved_counts_and_guards_empty_cells():
     """A channel with no transition decisions must yield NaN, not a divide-by-zero 0.0 that
     would read as 'this feature never matters there'."""

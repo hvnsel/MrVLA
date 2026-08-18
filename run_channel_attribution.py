@@ -169,10 +169,19 @@ def main() -> None:
     C_shr = np.zeros((S_SLOTS, G, F))
     n_cell = np.zeros((S_SLOTS, G), dtype=np.int64)
     modes = ["projection", "coded"] if args.coeff == "both" else [args.coeff]
+    # `_active` variants restrict to decisions where the feature actually FIRES. Without them
+    # the necessity comparison is a base-rate comparison: a feature that fires twice as often
+    # has twice the opportunity to change an action, and in coded mode an inactive feature has
+    # coefficient zero and literally cannot flip anything. Rate-given-active is the confound-free
+    # form and is what the general-vs-specialist contrast must be read from.
     flips = {m: {"n": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
                  "flip": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
                  "flip_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
                  "n_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
+                 "n_active": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
+                 "flip_active": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
+                 "n_active_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
+                 "flip_active_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
                  "bin_shift": np.zeros((feats.size, S_SLOTS))} for m in modes}
     agree_n = agree_ok = 0
     n_cf_used = 0
@@ -242,6 +251,7 @@ def main() -> None:
                     res_f = single_feature_flips(L, S_raw[feats[fi]], coeffs[:, fi],
                                                  base_arg, base_margin)
                     fl = res_f["flipped"] & use
+                    act = z[:, feats[fi]] > 0            # did this feature actually fire here?
                     # report the shift on the ACTION axis, not the row axis: they run opposite
                     shift = signed_bin_shift(res_f["base_argmax"], res_f["new_argmax"], n_act)
                     for s in range(n_sl):
@@ -252,6 +262,12 @@ def main() -> None:
                         mt = m & trans
                         flips[mode]["n_trans"][fi, s] += int(mt.sum())
                         flips[mode]["flip_trans"][fi, s] += int((fl & mt).sum())
+                        ma = m & act
+                        flips[mode]["n_active"][fi, s] += int(ma.sum())
+                        flips[mode]["flip_active"][fi, s] += int((fl & ma).sum())
+                        mat = ma & trans
+                        flips[mode]["n_active_trans"][fi, s] += int(mat.sum())
+                        flips[mode]["flip_active_trans"][fi, s] += int((fl & mat).sum())
         print(f"[chan]   {os.path.basename(sp)}: decisions={n}  "
               f"argmax agreement so far={agree_ok / max(agree_n, 1):.4f}", flush=True)
 
@@ -343,8 +359,10 @@ def main() -> None:
     print(f"[chan] channel PR (share) mean {np.nanmean(pr_chan_share):.2f} of {S_SLOTS}")
     for mode in modes:
         tot = flips[mode]["flip"].sum() / max(flips[mode]["n"].sum(), 1)
-        print(f"[chan] {mode:10s} overall flip rate {tot:.4f} over "
-              f"{flips[mode]['n'].sum()} feature-decisions")
+        act = flips[mode]["flip_active"].sum() / max(flips[mode]["n_active"].sum(), 1)
+        print(f"[chan] {mode:10s} flip rate {tot:.4f} over {flips[mode]['n'].sum()} "
+              f"feature-decisions;  GIVEN THE FEATURE FIRES {act:.4f} over "
+              f"{flips[mode]['n_active'].sum()}")
     print(f"\n[chan] wrote {args.out}  -- feed to analyze_channels.py")
 
 

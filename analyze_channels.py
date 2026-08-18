@@ -94,11 +94,24 @@ def channel_concentration(C_slot: np.ndarray, slot: int) -> np.ndarray:
     return channel_profile(C_slot)[slot]
 
 
-def flip_rates(chan, mode: str, transitions: bool = False) -> tuple[np.ndarray, np.ndarray]:
-    """(rate [n_cand, S], n [n_cand, S]) from the saved counterfactual counts."""
-    suffix = ("flip_trans", "n_trans") if transitions else ("flip", "n")
-    fl = chan[f"flip_{mode}_{suffix[0]}"].astype(np.float64)
-    n = chan[f"flip_{mode}_{suffix[1]}"].astype(np.float64)
+def flip_rates(chan, mode: str, transitions: bool = False,
+               active_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """(rate [n_cand, S], n [n_cand, S]) from the saved counterfactual counts.
+
+    `active_only` restricts to decisions where the feature actually fired. Use it for any
+    general-vs-specialist comparison: over ALL decisions the rate is an opportunity count, since
+    a feature that fires twice as often has twice the chances to change an action, and in coded
+    mode an inactive feature has coefficient zero and cannot flip anything at all.
+    """
+    fl_key = "flip_active" if active_only else "flip"
+    n_key = "n_active" if active_only else "n"
+    if transitions:
+        fl_key = "flip_active_trans" if active_only else "flip_trans"
+        n_key = "n_active_trans" if active_only else "n_trans"
+    if f"flip_{mode}_{fl_key}" not in chan:
+        return np.zeros((0, 0)), np.zeros((0, 0))
+    fl = chan[f"flip_{mode}_{fl_key}"].astype(np.float64)
+    n = chan[f"flip_{mode}_{n_key}"].astype(np.float64)
     with np.errstate(divide="ignore", invalid="ignore"):
         return np.where(n > 0, fl / n, np.nan), n
 
@@ -280,8 +293,17 @@ def main() -> None:
             rate_all, n_all = flip_rates(chan, mode, transitions=False)
             rate_tr, n_tr = flip_rates(chan, mode, transitions=True)
             entry = {"per_group": {}}
+            has_active = f"flip_{mode}_flip_active" in chan
             print(f"\n=== necessity ({mode}): does removing the feature change the action? ===")
-            print(f"  {'group':11s} {'channel':9s} {'all':>18s} {'transitions only':>20s}")
+            if has_active:
+                print("  'given fires' is the confound-free column: over ALL decisions the rate")
+                print("  mostly counts how often the feature fires, not how much it decides.")
+                print(f"  {'group':11s} {'channel':9s} {'all':>18s} {'given fires':>20s}")
+            else:
+                print("  NOTE this npz predates the fires-conditional counters, so the columns")
+                print("  below are opportunity-confounded: re-run run_channel_attribution.py to")
+                print("  get the comparison that controls for base rate.")
+                print(f"  {'group':11s} {'channel':9s} {'all':>18s} {'transitions only':>20s}")
             for gname, idx in groups.items():
                 rows_i = [pos[int(j)] for j in idx if int(j) in pos]
                 if not rows_i:
@@ -296,9 +318,18 @@ def main() -> None:
                     rt = ft / nt if nt else float("nan")
                     lo, hi = wilson_interval(int(fa), int(na)) if na else (np.nan, np.nan)
                     tlo, thi = wilson_interval(int(ft), int(nt)) if nt else (np.nan, np.nan)
-                    per_ch_stats.append({"channel": names[s], "rate_all": ra, "ci_all": [lo, hi],
-                                         "n_all": na, "rate_transitions": rt,
-                                         "ci_transitions": [tlo, thi], "n_transitions": nt})
+                    rec = {"channel": names[s], "rate_all": ra, "ci_all": [lo, hi],
+                           "n_all": na, "rate_transitions": rt,
+                           "ci_transitions": [tlo, thi], "n_transitions": nt}
+                    if has_active:
+                        fv = float(np.nansum(chan[f"flip_{mode}_flip_active"][rows_i, s]))
+                        nv = float(np.nansum(chan[f"flip_{mode}_n_active"][rows_i, s]))
+                        rv = fv / nv if nv else float("nan")
+                        vlo, vhi = wilson_interval(int(fv), int(nv)) if nv else (np.nan, np.nan)
+                        rec.update({"rate_given_fires": rv, "ci_given_fires": [vlo, vhi],
+                                    "n_given_fires": nv})
+                        tlo, thi, rt = vlo, vhi, rv     # the column actually printed
+                    per_ch_stats.append(rec)
                     if s == gslot or s == 0:
                         print(f"  {gname:11s} {names[s]:9s} {ra:8.4f}[{lo:.4f},{hi:.4f}] "
                               f"{rt:9.4f}[{tlo:.4f},{thi:.4f}]")
