@@ -16,9 +16,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np  # noqa: E402
+
 from mrvla.stats import (  # noqa: E402
     mcnemar_exact_p, mcnemar_p, mde_paired, norm_cdf, norm_ppf, paired_diff_ci,
-    required_pairs, wilson_interval,
+    rankdata_average, required_pairs, tie_fraction, wilson_interval,
 )
 
 
@@ -94,6 +96,43 @@ def test_mde_shrinks_with_n_and_required_pairs_inverts_it():
     # for at least the n we started from
     n, disc = 200, 0.2
     assert required_pairs(mde_paired(n, disc), disc) >= n - 1e-6
+
+
+def test_rankdata_averages_ties_unlike_the_argsort_idiom():
+    """The defect this replaces: np.argsort(np.argsort(x)) gives a block of equal values
+    DISTINCT ranks ordered by array index, so an arbitrary feature ordering leaks into every
+    rank statistic computed over tied data."""
+    x = [1.0, 1.0, 1.0, 1.0]
+    assert list(np.argsort(np.argsort(x))) == [0, 1, 2, 3]      # the idiom, wrong
+    assert list(rankdata_average(x)) == [1.5, 1.5, 1.5, 1.5]    # tie-averaged, right
+    assert list(rankdata_average([3.0, 1.0, 1.0, 2.0])) == [3.0, 0.5, 0.5, 2.0]
+
+
+def test_rankdata_agrees_with_the_idiom_when_there_are_no_ties():
+    """Untied data is why the defect went unnoticed: the two are identical there."""
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal(200)
+    assert np.allclose(rankdata_average(x), np.argsort(np.argsort(x)))
+
+
+def test_rankdata_is_order_preserving_and_sums_correctly():
+    rng = np.random.default_rng(1)
+    x = np.round(rng.standard_normal(100), 1)                   # forces plenty of ties
+    r = rankdata_average(x)
+    assert abs(r.sum() - (len(x) - 1) * len(x) / 2) < 1e-9      # ranks 0..n-1 conserved
+    for i in range(len(x)):
+        for j in range(len(x)):
+            if x[i] < x[j]:
+                assert r[i] < r[j]
+            elif x[i] == x[j]:
+                assert r[i] == r[j]
+
+
+def test_tie_fraction_measures_the_exposure():
+    assert tie_fraction([1.0, 2.0, 3.0]) == 0.0
+    assert tie_fraction([1.0, 1.0, 2.0, 3.0]) == 0.5
+    assert tie_fraction([5.0, 5.0, 5.0]) == 1.0
+    assert math.isnan(tie_fraction([]))
 
 
 def test_mde_guards_bad_inputs():

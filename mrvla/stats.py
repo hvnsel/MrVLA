@@ -25,8 +25,50 @@ import math
 
 __all__ = [
     "norm_cdf", "norm_ppf", "wilson_interval", "mcnemar_p", "mcnemar_exact_p",
-    "paired_diff_ci", "mde_paired", "required_pairs",
+    "paired_diff_ci", "mde_paired", "required_pairs", "rankdata_average", "tie_fraction",
 ]
+
+
+def rankdata_average(x) -> "np.ndarray":
+    """Ranks with TIES AVERAGED -- the textbook definition Spearman assumes.
+
+    The idiom used elsewhere in this repo, `np.argsort(np.argsort(x))`, does not do this: it
+    breaks ties by ARRAY INDEX, so a block of equal values receives distinct, arbitrary ranks
+    determined by feature ordering. For strictly continuous inputs the two agree, but ties are
+    not hypothetical here -- `base_rate` is a count over a fixed denominator, so every rarely
+    firing feature ties with its neighbours, and a per-channel causal mass is exactly zero for
+    any feature that never fires at that slot.
+
+    Index-broken ties inject an arbitrary ordering into whatever is being correlated or
+    residualised. Use this instead wherever ties are possible.
+    """
+    import numpy as np
+    x = np.asarray(x, dtype=np.float64)
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(x.size, dtype=np.float64)
+    sx = x[order]
+    i = 0
+    while i < x.size:
+        j = i
+        while j + 1 < x.size and sx[j + 1] == sx[i]:
+            j += 1
+        ranks[order[i:j + 1]] = 0.5 * (i + j)       # average rank over the tied block
+        i = j + 1
+    return ranks
+
+
+def tie_fraction(x) -> float:
+    """Fraction of entries that share their value with at least one other entry.
+
+    Report this beside any rank statistic computed with index-broken ranks: it is the size of
+    the exposure. Near 0 means the distinction does not matter for that variable.
+    """
+    import numpy as np
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return float("nan")
+    _, counts = np.unique(x, return_counts=True)
+    return float((counts[counts > 1].sum()) / x.size)
 
 
 def norm_cdf(x: float) -> float:

@@ -50,11 +50,14 @@ from mrvla.attribution import rank_partial_both
 from mrvla.channels import (
     DEFAULT_CHANNEL_NAMES, channel_participation_ratio, channel_profile,
 )
-from mrvla.stats import wilson_interval
+from mrvla.stats import rankdata_average, tie_fraction, wilson_interval
 
 
 def _ranks(x):
-    r = np.argsort(np.argsort(x)).astype(np.float64)
+    """Tie-averaged ranks, centred. NOT argsort(argsort(x)): that breaks ties by array index,
+    which matters here because per-channel causal mass is exactly zero for any feature that
+    never fires at that slot, and base_rate is a count over a fixed denominator."""
+    r = rankdata_average(x)
     return r - r.mean()
 
 
@@ -171,6 +174,29 @@ def main() -> None:
         print(f"  spread {spread:.3f}"
               + ("  -- channels are comparably valid" if spread <= 0.15 else
                  "  -- NOT comparably valid; weight or caveat every cross-channel claim"))
+
+    # ---------------- 0b. tie exposure of the rank statistics ------------------------
+    # Ranks elsewhere in this repo (identify_features._ranks, structural_generality._ranks) use
+    # argsort(argsort(x)), which breaks ties by ARRAY INDEX rather than averaging them. That is
+    # only harmless when ties are absent, so the exposure is measured here rather than assumed.
+    # base_rate is a count over a fixed denominator, and a per-channel causal mass is exactly
+    # zero for any feature that never fires at that slot, so ties are expected, not hypothetical.
+    ties = {"magnitude": tie_fraction(mag[active]), "base_rate": tie_fraction(base[active]),
+            "adjusted_breadth": tie_fraction(adj[active]),
+            "gripper_share": tie_fraction(channel_concentration(C_shr, gslot)[active])}
+    out["tie_fractions"] = ties
+    worst = max(ties.values())
+    print("\n=== tie exposure of the rank statistics ===")
+    for k2, v in ties.items():
+        print(f"  {k2:18s} {v:.4f}")
+    if worst > 0.02:
+        print(f"  Up to {100*worst:.1f}% of values are tied. This analysis averages tied ranks, "
+              "but\n  adjusted_breadth itself is built with index-broken ties "
+              "(identify_features._ranks),\n  so the feature ranking that selects the ablation "
+              "and steering targets carries an\n  arbitrary ordering inside every tied block. "
+              "Worth fixing upstream before publication.")
+    else:
+        print("  Ties are negligible; index-broken and tie-averaged ranks agree here.")
 
     # ---------------- 1. the two breadth axes ---------------------------------------
     pr_chan_abs = channel_participation_ratio(C_abs)

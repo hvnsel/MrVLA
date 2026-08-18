@@ -36,7 +36,7 @@ lives in. Both run on artifacts already collected.
 | 2 | `mrvla/channels.py` + `run_channel_attribution.py` | **done**, tested |
 | 3 | `analyze_channels.py` | **done**, tested |
 | 4 | `inventory_recurrence.py` | **done**, tested |
-| 5 | `inventory_clusters.py` | not started |
+| 5 | `inventory_clusters.py` | **done**, tested |
 
 ### Step 0 — the A4 gate (`action_space_geometry.py`)
 
@@ -188,9 +188,50 @@ first.
 
 The distributional view, and the primary route if step 0 reports low rank: cluster each model's
 signatures on the sphere, match centroids across models by Hungarian on cosine against the same
-floors, and compare **occupancy** — how many features per cluster. "Same inventory, different
-multiplicities" is a precise form of the claim, and multiplicity differences are what splitting
-*is*.
+floors, compare **occupancy** (the share of the dictionary each model devotes to a matched
+role), and cross-check with a **sliced-Wasserstein** distance that uses no clustering, so a
+k-dependent conclusion announces itself.
+
+Assignment is a from-scratch Hungarian solver, verified against brute-force enumeration on
+square and rectangular matrices. Greedy is reported beside it and the gap is diagnostic: greedy
+lets several roles claim one popular centroid and overstates agreement. This also discharges the
+§3.1 step-3 commitment to report Hungarian at scale, with no scipy dependency.
+
+**A correction to my own framing, established by simulation rather than guessed.** Clustering is
+*not* the rescue for Path B — the m-sweep is. Splitting comes in two kinds and they move the
+feature-level metric in opposite directions:
+
+- **Span-splitting** — fragments span the role without surrounding it, each with only a small
+  component along it. Every fragment is a poor individual match, so `max_j cos` **drops**. This
+  is the mechanism consistent with "generals recur less", and the m-sweep detects it. Clustering
+  does not, because the fragments' centroid is not the role.
+- **Duplication-splitting** — fragments are noisy copies surrounding the role. Now `max_j cos`
+  gets a best-of-N boost, so split features match **better** (measured on planted data: 0.62 for
+  three-way-split roles against 0.54 for atomic ones). Duplication therefore *cannot* explain
+  Path B's finding. Clustering detects it, via occupancy.
+
+So the two scripts are diagnostics for different mechanisms and running both is what identifies
+which one the real data shows: a feature-level deficit on generals plus a rising m-curve means
+span-splitting; a feature-level surplus plus uneven occupancy means duplication. Both directions
+are pinned by test, because assuming the wrong one would mean reading a clustering null as "the
+inventory does not recur either" when clustering was never the instrument for that question.
+
+### A defect found in the existing rank statistics
+
+`identify_features._ranks` and `structural_generality._ranks` compute ranks as
+`np.argsort(np.argsort(x))`, which does **not** average ties — it breaks them by array index, so
+a block of equal values receives distinct, arbitrary ranks determined by feature ordering. For
+strictly continuous inputs the two agree, which is why it went unnoticed, but ties are not
+hypothetical here: `base_rate` is a count over a fixed denominator, so rarely-firing features tie
+with each other, and a per-channel causal mass is exactly zero for any feature that never fires
+at that slot.
+
+This feeds `adjusted_breadth`, which is the ranking that selects the ablation and steering
+targets. `mrvla.stats.rankdata_average` is the correct version and the new code uses it;
+`tie_fraction` measures the exposure, and `analyze_channels.py` prints it for magnitude,
+base_rate, adjusted_breadth and gripper share so the size of the problem is visible per suite.
+**The existing pipeline is deliberately left unchanged** — fixing it would move published
+numbers, and that is a call to make deliberately rather than as a side effect of this work.
 
 ## Open dependencies
 
