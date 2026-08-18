@@ -19,10 +19,11 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import math
 import os
 
 import numpy as np
+
+from mrvla.stats import mcnemar_p, wilson_interval
 
 
 def load_episode_success(out_dir: str) -> tuple[np.ndarray, list[int]]:
@@ -40,28 +41,6 @@ def load_episode_success(out_dir: str) -> tuple[np.ndarray, list[int]]:
                 ep_success[ep] = int(s)
     eps = sorted(ep_success)
     return np.array([ep_success[e] for e in eps]), eps
-
-
-def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """95% Wilson score interval for a binomial proportion (more reliable than
-    a normal-approx interval when n is modest or the rate is near 0/1)."""
-    if n == 0:
-        return (float("nan"), float("nan"))
-    p = k / n
-    denom = 1 + z ** 2 / n
-    centre = p + z ** 2 / (2 * n)
-    margin = z * math.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2))
-    return ((centre - margin) / denom, (centre + margin) / denom)
-
-
-def mcnemar_p(b01: int, b10: int) -> float:
-    """Continuity-corrected McNemar test, two-sided, via the chi2(df=1) <->
-    normal relationship (avoids adding a scipy dependency to the repo)."""
-    if b01 + b10 == 0:
-        return float("nan")
-    stat = (abs(b01 - b10) - 1) ** 2 / (b01 + b10)
-    z = math.sqrt(stat)
-    return 2 * (1 - 0.5 * (1 + math.erf(z / math.sqrt(2))))
 
 
 def main():

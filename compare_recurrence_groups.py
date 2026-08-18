@@ -48,6 +48,49 @@ def common_language_effect(a: np.ndarray, b: np.ndarray) -> float:
     return float((gt + 0.5 * eq) / (a.size * b.size))
 
 
+def target_in_rec_path(rec_path: str) -> str:
+    """Extract <m> from a `layer_NN_target_<m>.npz` filename ("" if the name is not that shape)."""
+    stem = os.path.splitext(os.path.basename(rec_path))[0]
+    marker = "_target_"
+    i = stem.find(marker)
+    return stem[i + len(marker):] if i >= 0 else ""
+
+
+def check_target_matches_paths(target: str, rec_path: str, attr_path: str,
+                               allow_mismatch: bool = False) -> None:
+    """Refuse to run when --target disagrees with the model the input files belong to.
+
+    --target never selected anything: it is copied into the output json and the printed
+    header, while the model actually analysed comes from --rec (and the Path A side from
+    --attr). Passing `--target spatial` with the goal npz therefore produced a goal
+    comparison labelled "spatial", and a per-suite table built that way is wrong in a way
+    nothing downstream can detect. The label is now checked against both paths.
+
+    --attr is matched loosely (a substring of the path) because attribution directories are
+    named freely, e.g. ATTR/goal_k100. --rec is matched exactly against the target embedded
+    in the filename.
+    """
+    if not target:
+        return
+    rec_target = target_in_rec_path(rec_path)
+    problems = []
+    if rec_target and rec_target != target:
+        problems.append(f"--rec is for target {rec_target!r}, not {target!r} ({rec_path})")
+    if target not in os.path.abspath(attr_path):
+        problems.append(f"--attr path does not mention {target!r} ({attr_path})")
+    if not problems:
+        return
+    msg = ("[cmp] --target disagrees with the input files:\n  "
+           + "\n  ".join(problems)
+           + "\n  --target only labels the output; switch --rec (and --attr) to change which "
+             "model is compared.\n  Pass --allow-mismatch if the naming is intentional.")
+    if allow_mismatch:
+        print(msg.replace("[cmp] --target disagrees", "[cmp] WARNING --target disagrees"),
+              flush=True)
+    else:
+        raise SystemExit(msg)
+
+
 def _stats(x):
     x = np.asarray(x, float); x = x[np.isfinite(x)]
     return {"n": int(x.size), "mean": float(np.mean(x)) if x.size else float("nan"),
@@ -60,9 +103,16 @@ def main() -> None:
     p.add_argument("--attr", required=True, help="Path A layer_NN_attribution.npz")
     p.add_argument("--rec", required=True, help="Path B action-position layer_NN_target_<m>.npz")
     p.add_argument("--top", type=int, default=100, help="group size N (general and specialist each)")
-    p.add_argument("--target", default="", help="model name, for labelling only")
+    p.add_argument("--target", default="",
+                   help="model name. LABEL ONLY -- the model actually compared is the one "
+                        "encoded in --rec (layer_NN_target_<m>.npz) and --attr. A mismatch "
+                        "is rejected rather than silently mislabelled; see --allow-mismatch.")
+    p.add_argument("--allow-mismatch", action="store_true",
+                   help="proceed despite --target disagreeing with the --rec/--attr paths")
     p.add_argument("--out", default=None)
     args = p.parse_args()
+
+    check_target_matches_paths(args.target, args.rec, args.attr, args.allow_mismatch)
 
     A = np.load(args.attr)
     B = np.load(args.rec)
