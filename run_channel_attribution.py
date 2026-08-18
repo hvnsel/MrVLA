@@ -140,6 +140,15 @@ def main() -> None:
     S_raw = signature_matrix(W_dec, g_gain, W_U_act, center=False)     # [F, 256]
     S_cen = S_raw - S_raw.mean(axis=1, keepdims=True)                  # alignment lookup table
 
+    # Per-slot sufficiency needs the SAE's constant term (mu*1 + b_pre) projected on the same
+    # contrast direction. Both halves are inner products with u_contrast(t), so each collapses
+    # to a 256-vector lookup computed once -- the same trick that turns the alignment matvec
+    # into a gather. Nothing here costs a pass over the data.
+    b_pre_np = b_pre_t.detach().float().cpu().numpy().astype(np.float64)
+    U_c = W_U_act - W_U_act.mean(axis=0, keepdims=True)                # [256, d]
+    G1 = U_c @ g_gain                                                  # <1 (*) g, u_c(t)>
+    BG = U_c @ (b_pre_np * g_gain)                                     # <b_pre (*) g, u_c(t)>
+
     cand = pick_candidates(args.attr, args.top)
     feats = np.array(cand["features"], dtype=np.int64)
     print(f"[chan] {feats.size} candidate features "
@@ -167,6 +176,9 @@ def main() -> None:
                  "bin_shift": np.zeros((feats.size, S_SLOTS))} for m in modes}
     agree_n = agree_ok = 0
     n_cf_used = 0
+    # sufficiency, accumulated per slot as through-origin slope sums (see the report below)
+    suff = {k: np.zeros(S_SLOTS) for k in ("tt", "t_recon", "t_feat")}
+    suff_n = np.zeros(S_SLOTS, dtype=np.int64)
 
     for sp in shards:
         dd = np.load(sp)
@@ -192,6 +204,22 @@ def main() -> None:
         align = S_cen.T[np.clip(tok_rows, 0, n_act - 1)]               # [n*7, F] column gather
         phi_abs = np.abs((l2 / r_scal)[:, None] * z * align)
         phi_abs[~valid] = 0.0
+
+        # --- per-slot sufficiency: what share of THIS channel's action margin do the
+        # features additively recover? The margin decomposes exactly at frozen r as
+        # true = features + (mu + b_pre) bias + error, and every term is already in hand.
+        tok_safe = np.clip(tok_rows, 0, n_act - 1)
+        true_c = (L[np.arange(L.shape[0]), tok_safe] - L.mean(axis=1)) / r_scal
+        phi_sum = (l2 / r_scal) * (z * align).sum(axis=1)          # features alone (signed)
+        const_c = (mu * G1[tok_safe] + BG[tok_safe]) / r_scal      # the constant bias term
+        recon_c = phi_sum + const_c
+        for s_i in range(n_sl):
+            m = (slots == s_i) & valid
+            if m.any():
+                suff["tt"][s_i] += float((true_c[m] * true_c[m]).sum())
+                suff["t_recon"][s_i] += float((true_c[m] * recon_c[m]).sum())
+                suff["t_feat"][s_i] += float((true_c[m] * phi_sum[m]).sum())
+                suff_n[s_i] += int(m.sum())
 
         accumulate_slot_task(C_abs, n_cell, phi_abs, slots, rows_task)
         accumulate_slot_task(C_shr, np.zeros_like(n_cell), decision_shares(phi_abs),
@@ -234,6 +262,10 @@ def main() -> None:
               "[chan]     mapping do not line up, and every number below is unreliable.\n"
               "[chan]     Do not interpret this run until it is resolved. ***")
 
+    with np.errstate(divide="ignore", invalid="ignore"):
+        suff_recon = np.where(suff["tt"] > 0, suff["t_recon"] / suff["tt"], np.nan)
+        suff_feat = np.where(suff["tt"] > 0, suff["t_feat"] / suff["tt"], np.nan)
+
     denom = np.maximum(n_cell, 1)[:, :, None]
     C_abs /= denom
     C_shr /= denom
@@ -248,6 +280,9 @@ def main() -> None:
                         channel_pr_share=pr_chan_share.astype(np.float32),
                         channel_profile_share=channel_profile(C_shr).astype(np.float32),
                         candidate_features=feats,
+                        sufficiency_recon=suff_recon.astype(np.float32),
+                        sufficiency_features_only=suff_feat.astype(np.float32),
+                        sufficiency_n=suff_n,
                         **{f"flip_{m}_{key}": v for m in modes
                            for key, v in flips[m].items()})
 
@@ -257,9 +292,23 @@ def main() -> None:
                "argmax_agreement": agreement, "decoder_unit_norm_dev": dev,
                "channel_names": names, "groups": cand["groups"],
                "decisions_per_slot_task": n_cell.tolist(),
+               "sufficiency_recon_per_slot": [float(v) for v in suff_recon],
+               "sufficiency_features_only_per_slot": [float(v) for v in suff_feat],
                "modes": modes}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
+
+    print("\n[chan] per-slot SUFFICIENCY -- fraction of each channel's action margin the")
+    print("[chan] features additively recover. Channels differ, so conclusions drawn from them")
+    print("[chan] are not equally reliable; a low-sufficiency channel needs discounting.")
+    for s_i in range(S_SLOTS):
+        flag = "" if suff_recon[s_i] >= 0.80 else "   <- below the 0.80 gate bar"
+        print(f"[chan]   {names[s_i]:8s} recon={suff_recon[s_i]:.4f}  "
+              f"features_only={suff_feat[s_i]:.4f}  n={suff_n[s_i]}{flag}")
+    spread = float(np.nanmax(suff_recon) - np.nanmin(suff_recon))
+    if spread > 0.15:
+        print(f"[chan]   SPREAD {spread:.3f} across channels: cross-channel comparisons must be")
+        print("[chan]   weighted or caveated -- the decomposition is not equally valid everywhere.")
 
     print("\n[chan] mean causal SHARE per channel (comparable across slots):")
     for s in range(S_SLOTS):

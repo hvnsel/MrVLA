@@ -34,7 +34,7 @@ lives in. Both run on artifacts already collected.
 | 0 | `action_space_geometry.py` | **done**, tested |
 | 1 | `mrvla/readout.py` | **done**, tested against brute force |
 | 2 | `mrvla/channels.py` + `run_channel_attribution.py` | **done**, tested |
-| 3 | `analyze_channels.py` | not started |
+| 3 | `analyze_channels.py` | **done**, tested |
 | 4 | `inventory_recurrence.py` | not started |
 | 5 | `inventory_clusters.py` | not started |
 
@@ -113,13 +113,31 @@ term with a per-row matvec inside a Python loop over all 446k rows, but since
 signature matrix. The loop collapses to a column gather. A test proves the two agree against
 `mrvla.attribution.attribute`.
 
-### Step 3 — `analyze_channels.py` (next)
+### Step 3 — `analyze_channels.py`
 
-`PR_chan` (effective number of action dimensions driven), the breadth × channel plane,
-`corr(adjusted_breadth, gripper share)` rank-residualised on magnitude and base rate, the
-absolute-vs-share comparison, the transitions-only rerun, and a per-slot sufficiency table (if
-the decomposition recovers 95% of the gripper margin and 70% of yaw, per-slot conclusions carry
-unequal weight and the comparison needs weighting).
+Reports, in order: the per-slot sufficiency table (printed first because it gates everything —
+if the decomposition recovers 95% of the gripper margin and 70% of yaw, the channels are not
+equally trustworthy and a spread above 0.15 says so explicitly); `PR_chan` and its correlation
+with task breadth (near zero means channel breadth is a genuinely new axis, strongly positive
+means "general" just meant "touches everything" and there is one axis, not two);
+`corr(adjusted_breadth, gripper concentration)` rank-residualised on magnitude and base rate
+with the same estimator as the Path A headline, plus the same partial for all seven channels so
+the story is not gripper-or-nothing; the general-vs-specialist channel profile with a
+common-language effect size; and necessity flip rates per group per channel with Wilson
+intervals, on all decisions and on gripper-transition decisions only.
+
+Per-slot sufficiency was folded back into step 2 rather than deferred — every term
+(`true_c`, `phi_sum`, the `mu + b_pre` constant) collapses to a 256-vector lookup or a row sum
+of quantities the pass already computes, so it costs nothing.
+
+**A limit of the absolute-vs-share control, stated rather than glossed.** A perfectly uniform
+per-slot rescale is a monotone transform of every feature's channel profile, so it leaves rank
+correlations untouched and the comparison will report AGREE however large the factor is. The
+split catches *differential* distortion — inflation that depends on which features are active,
+which is the realistic form, since `‖u_contrast‖` depends on the emitted bin and which bins are
+emitted covaries with which features fire — and it catches every level comparison, where even a
+uniform factor moves the numbers. Both behaviours are pinned by test so `AGREE` is not
+over-read as "no scale confound possible".
 
 ### Step 4 — `inventory_recurrence.py`
 
