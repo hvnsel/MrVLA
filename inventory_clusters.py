@@ -99,6 +99,48 @@ def spearman(a, b) -> float:
     return float((ra * rb).sum() / den) if den > 0 else float("nan")
 
 
+def load_heads(specs) -> dict:
+    """{model_name: (W_U_act, g)} from repeatable 'name=path' --head arguments.
+
+    A feature's causal signature is how it moves the 256 ACTION BINS, and a bin index means the
+    same commanded action in every model. That semantic space is shared even when the linear map
+    producing it is not -- and it is not: the published OpenVLA LIBERO checkpoints have
+    different unembeddings (measured max |diff| 0.027 in W_U_act; g and act_ids identical). So
+    each model's decoder must be pushed through ITS OWN head, exactly as
+    run_causal_recurrence.py already does, and comparing the results is still comparing effects
+    on a common set of action bins.
+
+    A single bare path is accepted and shared across models for convenience, with a warning:
+    that is only correct if the heads really are identical, which action_space_geometry.py
+    checks.
+    """
+    out, shared = {}, None
+    for spec in specs:
+        name, sep, path = spec.partition("=")
+        if not sep:
+            shared = name
+            continue
+        hc = np.load(path)
+        out[name] = (hc["W_U_act"].astype(np.float64), hc["g"].astype(np.float64))
+    if shared is not None:
+        hc = np.load(shared)
+        out["__shared__"] = (hc["W_U_act"].astype(np.float64), hc["g"].astype(np.float64))
+        print(f"[head] WARNING one bare --head given ({shared}); it will be used for every "
+              f"model.\n[head] That is only valid if the unembeddings are identical -- run "
+              f"action_space_geometry.py\n[head] with all four --head files to check.")
+    return out
+
+
+def head_for(heads: dict, name: str):
+    """The head belonging to `name`, falling back to a shared one. Fails loudly otherwise."""
+    if name in heads:
+        return heads[name]
+    if "__shared__" in heads:
+        return heads["__shared__"]
+    raise SystemExit(f"no --head given for model {name!r}; pass --head {name}=<path to "
+                     f"head_constants.npz>, or one bare --head to share a single head")
+
+
 def signatures(W_dec, W_U_act, g, center=True):
     S = (W_dec * np.asarray(g, float)[None, :]) @ np.asarray(W_U_act, float).T
     return S - S.mean(axis=1, keepdims=True) if center else S
@@ -125,7 +167,10 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", action="append", required=True, help="'name=sae_dir'. Repeatable.")
     ap.add_argument("--target", required=True)
-    ap.add_argument("--head", required=True)
+    ap.add_argument("--head", action="append", required=True,
+                    help="head_constants.npz as 'name=path', one per model. See "
+                         "inventory_recurrence.py: heads differ across models and each decoder "
+                         "must go through its own.")
     ap.add_argument("--attr", required=True, help="target's attribution npz (breadth ranking)")
     ap.add_argument("--seed-sae", default=None, help="second-seed SAE for the target: the CEILING")
     ap.add_argument("--base-sae", default=None, help="base-model SAE (inheritance control)")
@@ -138,9 +183,7 @@ def main() -> None:
 
     os.makedirs(args.out, exist_ok=True)
     ks = [int(x) for x in args.k.split(",") if x.strip()]
-    hc = np.load(args.head)
-    W_U_act = hc["W_U_act"].astype(np.float64)
-    g = hc["g"].astype(np.float64)
+    heads = load_heads(args.head)
 
     models, cks = {}, {}
     for spec in args.model:
@@ -156,7 +199,8 @@ def main() -> None:
         raise SystemExit("need at least one non-target model")
 
     d = models[args.target].shape[1]
-    S_t = signatures(models[args.target], W_U_act, g)
+    W_U_t, g_t = head_for(heads, args.target)
+    S_t = signatures(models[args.target], W_U_t, g_t)
     A_hat = normalize_rows(S_t)[0]
     sharp = signature_sharpness(S_t)
 
@@ -168,14 +212,16 @@ def main() -> None:
         raise SystemExit(f"attribution has {adj.shape[0]} features, SAE has {A_hat.shape[0]}")
 
     # signature clouds for every dictionary we will compare against
-    clouds = {n: normalize_rows(signatures(models[n], W_U_act, g))[0] for n in others}
+    # each model's decoder through ITS OWN head; the shared thing is the 256 action bins
+    clouds = {n: normalize_rows(signatures(models[n], *head_for(heads, n)))[0] for n in others}
     rng = np.random.default_rng(args.rng_seed)
-    randoms = [random_signature_dictionary(models[others[0]].shape[0], d, W_U_act, g, rng)
+    rW_U, rg = head_for(heads, others[0])
+    randoms = [random_signature_dictionary(models[others[0]].shape[0], d, rW_U, rg, rng)
                for _ in range(max(1, args.n_null))]
     ceiling_cloud = None
     if args.seed_sae:
         W_seed, ck = load_decoder(args.seed_sae, args.layer)
-        ceiling_cloud = normalize_rows(signatures(W_seed, W_U_act, g))[0]
+        ceiling_cloud = normalize_rows(signatures(W_seed, W_U_t, g_t))[0]
         print(f"[clu] seed ceiling from {ck}")
     else:
         print("[clu] NO --seed-sae: without the same-model different-seed ceiling, centroid "
@@ -183,7 +229,8 @@ def main() -> None:
     base_cloud = None
     if args.base_sae:
         W_base, _ = load_decoder(args.base_sae, args.layer)
-        base_cloud = normalize_rows(signatures(W_base, W_U_act, g))[0]
+        bW_U, bg = head_for(heads, "base") if "base" in heads else (W_U_t, g_t)
+        base_cloud = normalize_rows(signatures(W_base, bW_U, bg))[0]
 
     out: dict = {"target": args.target, "others": others, "layer": args.layer, "k_sweep": ks,
                  "per_k": {}}

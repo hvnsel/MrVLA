@@ -7,11 +7,22 @@ lives in. Both run on artifacts already collected.
 
 ## Facts established from the code (these shape everything below)
 
-1. **LoRA trains only `q_proj, k_proj, v_proj, o_proj`** (`train_lora.py:580`). The unembedding
-   and the final RMSNorm gain are frozen, so they are identical across all four fine-tuned
-   models and the 256-bin output space is *literally* shared — cross-model signature comparison
-   carries no alignment ambiguity, and every difference between models' signatures comes from
-   `W_dec` alone. `action_space_geometry.py` verifies this rather than assuming it.
+1. ~~LoRA trains only `q_proj, k_proj, v_proj, o_proj`, so the heads are identical.~~
+   **WRONG, and measured to be wrong (2026-08).** That inference read `train_lora.py`, but the
+   four models are the OpenVLA team's *published* checkpoints
+   (`openvla/openvla-7b-finetuned-libero-{goal,spatial,object,10}`, see
+   `run_ablation_goal.slurm`), not products of this repo's LoRA script. Their unembeddings
+   differ: `action_space_geometry.py` measures max |diff| = 0.027 in `W_U_act`, with `g` and
+   `act_ids` identical.
+
+   **What this does and does not break.** Each model's decoder must be pushed through ITS OWN
+   head — `run_causal_recurrence.py` already does this; `inventory_recurrence.py` and
+   `inventory_clusters.py` were fixed to take repeatable `--head name=path`. The comparison
+   itself remains well defined, because the shared thing is the 256 action BINS: bin *t* is the
+   same commanded action in every model, so "how does this feature push bin *t*" is a common
+   semantic quantity even when the linear map producing it differs. It is the map that varies,
+   not the space. `head_divergence_impact` reports how far a signature actually moves when the
+   wrong head is used, since a raw weight difference is not interpretable on its own.
 2. **The same 256 action tokens are reused at all 7 decode positions.** Channel identity is
    positional. A feature's 256-bin signature is therefore semantically ambiguous until
    conditioned on the slot — which is why B1 feeds back into A4.
@@ -235,8 +246,10 @@ numbers, and that is a call to make deliberately rather than as a side effect of
 
 ## Open dependencies
 
-- Step 0 needs `head_constants.npz` from the cluster; it cannot be run here. Its output decides
-  step 4's design, so run it first and read the printed branch.
+- ~~Step 0 needs to be run.~~ **Run 2026-08. Result: signature-space effective rank 50.8, 99%
+  energy at 246, random 12-dim subspace explains 5.8% of an arbitrary direction. Branch:
+  m-sweep at full range, high confidence.** No crowding problem, so step 4 is the primary route
+  and step 5 is the complement rather than the fallback.
 - Step 4's ceiling needs a second SAE seed per suite; only `goal` has one today (backlog item in
   `EXPERIMENT_PLAN.md`).
 - Step 2 assumes OpenVLA's action ordering `[dx, dy, dz, droll, dpitch, dyaw, gripper]` for

@@ -65,6 +65,48 @@ def load_decoder(sae_dir: str, layer: int) -> tuple[np.ndarray, str]:
     return W_dec_t.detach().float().cpu().numpy().astype(np.float64), ck
 
 
+def load_heads(specs) -> dict:
+    """{model_name: (W_U_act, g)} from repeatable 'name=path' --head arguments.
+
+    A feature's causal signature is how it moves the 256 ACTION BINS, and a bin index means the
+    same commanded action in every model. That semantic space is shared even when the linear map
+    producing it is not -- and it is not: the published OpenVLA LIBERO checkpoints have
+    different unembeddings (measured max |diff| 0.027 in W_U_act; g and act_ids identical). So
+    each model's decoder must be pushed through ITS OWN head, exactly as
+    run_causal_recurrence.py already does, and comparing the results is still comparing effects
+    on a common set of action bins.
+
+    A single bare path is accepted and shared across models for convenience, with a warning:
+    that is only correct if the heads really are identical, which action_space_geometry.py
+    checks.
+    """
+    out, shared = {}, None
+    for spec in specs:
+        name, sep, path = spec.partition("=")
+        if not sep:
+            shared = name
+            continue
+        hc = np.load(path)
+        out[name] = (hc["W_U_act"].astype(np.float64), hc["g"].astype(np.float64))
+    if shared is not None:
+        hc = np.load(shared)
+        out["__shared__"] = (hc["W_U_act"].astype(np.float64), hc["g"].astype(np.float64))
+        print(f"[head] WARNING one bare --head given ({shared}); it will be used for every "
+              f"model.\n[head] That is only valid if the unembeddings are identical -- run "
+              f"action_space_geometry.py\n[head] with all four --head files to check.")
+    return out
+
+
+def head_for(heads: dict, name: str):
+    """The head belonging to `name`, falling back to a shared one. Fails loudly otherwise."""
+    if name in heads:
+        return heads[name]
+    if "__shared__" in heads:
+        return heads["__shared__"]
+    raise SystemExit(f"no --head given for model {name!r}; pass --head {name}=<path to "
+                     f"head_constants.npz>, or one bare --head to share a single head")
+
+
 def signatures(W_dec, W_U_act, g, center=True):
     S = (W_dec * np.asarray(g, float)[None, :]) @ np.asarray(W_U_act, float).T
     if center:
@@ -96,7 +138,12 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", action="append", required=True, help="'name=sae_dir'. Repeatable.")
     ap.add_argument("--target", required=True, help="which model's features are the targets")
-    ap.add_argument("--head", required=True, help="head_constants.npz (shared across models)")
+    ap.add_argument("--head", action="append", required=True,
+                    help="head_constants.npz as 'name=path', one per model. The unembeddings "
+                         "are NOT identical across the published OpenVLA LIBERO checkpoints "
+                         "(measured: max |diff| 0.027 in W_U_act, g and act_ids identical), so "
+                         "each model's decoder must go through ITS OWN head. A single bare path "
+                         "is accepted and shared, with a warning.")
     ap.add_argument("--attr", required=True, help="target's layer_NN_attribution.npz")
     ap.add_argument("--seed-sae", default=None,
                     help="second-seed SAE for the target: the CEILING. Without it, "
@@ -115,9 +162,7 @@ def main() -> None:
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    hc = np.load(args.head)
-    W_U_act = hc["W_U_act"].astype(np.float64)
-    g = hc["g"].astype(np.float64)
+    heads = load_heads(args.head)
 
     models = {}
     for spec in args.model:
@@ -130,7 +175,8 @@ def main() -> None:
     if args.target not in models:
         raise SystemExit(f"--target {args.target!r} is not among --model names {list(models)}")
 
-    S_t = signatures(models[args.target], W_U_act, g)
+    W_U_t, g_t = head_for(heads, args.target)
+    S_t = signatures(models[args.target], W_U_t, g_t)
     A_hat, A_norms = normalize_rows(S_t)
     sharp = signature_sharpness(S_t)
     d = models[args.target].shape[1]
@@ -145,7 +191,8 @@ def main() -> None:
     # ---------------- observed ----------------
     obs, published_q, anti = [], {}, {}
     for n in others:
-        B_hat, _ = normalize_rows(signatures(models[n], W_U_act, g))
+        W_U_n, g_n = head_for(heads, n)          # each model through its OWN head
+        B_hat, _ = normalize_rows(signatures(models[n], W_U_n, g_n))
         cos, _ = omp_curve(A_hat, B_hat, M, args.positive_only, args.n_restarts)
         obs.append(cos)
         q_signed, _ = signed_best_match(A_hat, B_hat)
@@ -160,8 +207,9 @@ def main() -> None:
     null_runs = []
     for n in others:
         F_b = models[n].shape[0]
+        W_U_n, g_n = head_for(heads, n)          # random decoders through that model's own head
         for _ in range(max(1, args.n_null)):
-            B_hat = random_signature_dictionary(F_b, d, W_U_act, g, rng)
+            B_hat = random_signature_dictionary(F_b, d, W_U_n, g_n, rng)
             cos, _ = omp_curve(A_hat, B_hat, M, args.positive_only, args.n_restarts)
             null_runs.append(cos)
     NULL = np.mean(np.stack(null_runs), axis=0)
@@ -172,7 +220,7 @@ def main() -> None:
     CEIL = None
     if args.seed_sae:
         W_seed, ck = load_decoder(args.seed_sae, args.layer)
-        B_hat, _ = normalize_rows(signatures(W_seed, W_U_act, g))
+        B_hat, _ = normalize_rows(signatures(W_seed, W_U_t, g_t))   # same model, same head
         CEIL, _ = omp_curve(A_hat, B_hat, M, args.positive_only, args.n_restarts)
         print(f"[inv] seed ceiling ({os.path.basename(ck)})  m=1 {CEIL[:, 0].mean():.4f} ... "
               f"m={M} {CEIL[:, -1].mean():.4f}")
@@ -184,7 +232,8 @@ def main() -> None:
     INH = None
     if args.base_sae:
         W_base, _ = load_decoder(args.base_sae, args.layer)
-        B_hat, _ = normalize_rows(signatures(W_base, W_U_act, g))
+        bW_U, bg = head_for(heads, "base") if "base" in heads else (W_U_t, g_t)
+        B_hat, _ = normalize_rows(signatures(W_base, bW_U, bg))
         INH, _ = omp_curve(A_hat, B_hat, M, args.positive_only, args.n_restarts)
         print(f"[inv] base inheritance        m=1 {INH[:, 0].mean():.4f} ... "
               f"m={M} {INH[:, -1].mean():.4f}")
