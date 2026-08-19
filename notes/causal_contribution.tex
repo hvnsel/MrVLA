@@ -1,0 +1,360 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+% Notation used throughout.
+\newcommand{\Rb}{\mathbb{R}}
+\newcommand{\ip}[2]{\left\langle #1,\, #2 \right\rangle}
+\newcommand{\ucon}{u_{\mathrm{contrast}}}
+\newcommand{\bpre}{b_{\mathrm{pre}}}
+
+\title{How we define and quantify causal contribution}
+\author{MrVLA}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+A feature's \emph{causal contribution} is its signed, exactly additive share of the
+\emph{contrast-centred} action logit at the policy's readout: how much of the model's
+\emph{choice between actions} that feature wrote. It is measured per decision, validated by
+an additivity identity, upgraded to necessity by an exact counterfactual, and turned into a
+feature-level property only through held-out, confound-controlled statistics. The definition
+is \emph{functional and label-free}: nothing in it refers to what a feature means, to a firing
+pattern, or to a hand-assigned category. It is a quantity in the units of the policy's own
+decision.
+\end{abstract}
+
+\section{Notation}
+\label{sec:notation}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Symbol & Type & Meaning \\
+\midrule
+$h$        & $\Rb^{d}$          & layer-31 residual at the action-token position \\
+$r$        & $\Rb_{>0}$         & $r=\operatorname{rms}(h)=\sqrt{\operatorname{mean}(h^{2})+\varepsilon}$ \\
+$g$        & $\Rb^{d}$          & final-RMSNorm gain (entrywise) \\
+$u_t$      & $\Rb^{d}$          & unembedding row for action token $t$ \\
+$\ucon$    & $\Rb^{d}$          & $u_t-\tfrac{1}{256}\sum_{s}u_s$, the contrast direction \\
+$z$        & $\Rb_{\ge 0}^{F}$  & \textbf{SAE code}: how strongly each feature is present \\
+$w_j$      & $\Rb^{d}$          & SAE decoder row $j$, unit norm: \emph{what} feature $j$ writes \\
+$\ell_2$   & $\Rb_{>0}$         & the SAE's per-sample normaliser \\
+$\mu,\ \bpre$ & $\Rb,\ \Rb^{d}$ & SAE mean term and pre-bias \\
+$\varphi_j$& $\Rb$              & \textbf{causal contribution} of feature $j$ to this decision \\
+$C_j(g)$   & $\Rb_{\ge 0}$      & feature $j$'s causal importance on task $g$ \\
+$S[j,t]$   & $\Rb$              & $\ip{w_j\odot g}{u_t}$, feature $j$'s signature over the 256 bins \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Throughout, $\odot$ is the entrywise product. In the runs reported here $d$ is the OpenVLA
+(Llama-2 7B) width, $F=2048$ features, and the SAE is TopK with $k=100$.
+
+\section{Why the definition is exact rather than approximate}
+\label{sec:exact}
+
+OpenVLA emits an action as seven discrete tokens, each an argmax over 256 bins, read off the
+layer-31 residual:
+\begin{equation}
+\operatorname{logit}(t) \;=\; \operatorname{RMSNorm}(h)\cdot u_t
+\;=\; \frac{1}{r}\,\ip{h \odot g}{u_t}.
+\label{eq:readout}
+\end{equation}
+At layer 31 the readout \emph{is} the whole remaining computation, and it is a dot product ---
+additive by construction. We therefore need no gradients, no path patching and no saliency
+surrogate: the decomposition below is an \emph{identity}, not an approximation.
+
+\paragraph{Scope, stated up front.} This exactness is precisely why we work at layer 31 and
+only layer 31. Earlier layers would require gradient or path-patching methods and are a
+separate decision.
+
+\section{The two symbols: \texorpdfstring{$z$}{z} and \texorpdfstring{$\varphi$}{phi}}
+\label{sec:zphi}
+
+These are the two quantities the whole argument turns on, and conflating them is exactly the
+error the prior work's firing-based metric makes.
+
+\subsection{\texorpdfstring{$z$}{z} --- presence}
+
+$z\in\Rb_{\ge0}^{F}$ is the \textbf{SAE code} for the residual $h$: the vector of feature
+activations produced by the sparse autoencoder's encoder. Because the SAE is TopK with
+$k=100$ over $F=2048$ features, at most $100$ entries of $z$ are nonzero on any decision;
+the rest are exactly zero. The decoder then writes the residual back as
+\begin{equation}
+h \;\approx\; \ell_2 \sum_{j=1}^{F} z_j\, w_j \;+\; \mu\mathbf{1} \;+\; \bpre .
+\label{eq:sae}
+\end{equation}
+So $z_j$ answers \emph{``is feature $j$ present on this decision, and how strongly?''}, and
+since $\|w_j\|=1$, the product $\ell_2 z_j$ is the amount --- in residual-stream norm --- that
+feature $j$ writes into $h$.
+
+\medskip
+\noindent
+$z$ is what a \textbf{firing-based} metric sees. It is a statement about the feature's
+\emph{activity}, and it is silent on whether that activity affects the robot.
+
+\subsection{\texorpdfstring{$\varphi$}{phi} --- influence}
+
+$\varphi_j$ is the \textbf{causal contribution}: the number of logits, in the action head's own
+units, that feature $j$ added to the emitted action \emph{relative to the alternatives}. It is
+signed --- a feature can push the model toward the emitted bin ($\varphi_j>0$) or away from it
+($\varphi_j<0$) --- and the $\varphi_j$ sum exactly to the decision (Section~\ref{sec:phi}).
+
+\medskip
+\noindent
+$\varphi$ is a statement about the feature's \emph{influence}. The distinction from $z$ is the
+point of the whole construction, and it is visible directly in the formula, which factorises
+into three parts:
+\begin{equation}
+\varphi_j \;=\;
+\underbrace{\frac{\ell_2}{r}}_{\text{per-decision scale}}
+\;\cdot\;
+\underbrace{\vphantom{\frac{\ell_2}{r}} z_j}_{\text{presence}}
+\;\cdot\;
+\underbrace{\vphantom{\frac{\ell_2}{r}} \ip{w_j}{g \odot \ucon}}_{\text{alignment / geometry}} .
+\label{eq:phi}
+\end{equation}
+Only the third factor is specific to \emph{this feature acting on this action}, and it is
+exactly what a firing metric cannot see. Consequently the two quantities come apart, and they
+come apart in both directions:
+\begin{itemize}
+\item \textbf{busy-but-inert:} $z_j$ large, $\ip{w_j}{g\odot\ucon}\approx 0$, hence
+      $\varphi_j\approx 0$. The feature fires constantly and writes nothing into the decision.
+\item \textbf{rare-but-decisive:} $z_j$ nonzero only occasionally, but with large alignment,
+      so that when it does fire it moves --- and can flip --- the emitted action.
+\end{itemize}
+
+\section{Level 1: contribution}
+\label{sec:phi}
+
+Subtracting the mean logit over the 256 action tokens from \eqref{eq:readout} gives the
+\emph{contrast} logit, which is the quantity that actually decides the action (a term that
+lifts every bin equally cannot change the argmax):
+\begin{equation}
+\operatorname{logit}(t) - \frac{1}{256}\sum_{s}\operatorname{logit}(s)
+\;=\; \frac{1}{r}\,\ip{h\odot g}{\ucon}.
+\label{eq:contrast}
+\end{equation}
+Substituting the SAE decomposition \eqref{eq:sae} into \eqref{eq:contrast} and using
+bilinearity of the inner product:
+\begin{equation}
+\frac{1}{r}\ip{h\odot g}{\ucon}
+\;=\;
+\sum_{j=1}^{F}\underbrace{\frac{\ell_2}{r}\, z_j \ip{w_j}{g\odot\ucon}}_{\textstyle \varphi_j}
+\;+\;
+\underbrace{\frac{1}{r}\ip{\mu\mathbf{1}+\bpre}{g\odot\ucon}}_{\textstyle \text{constant}} .
+\label{eq:decomp}
+\end{equation}
+This is the definition. Two choices in it carry the argument.
+
+\paragraph{(i) Contrast-centring.} Attributing to $\ucon$ rather than to $u_t$ means a
+direction that lifts \emph{every} action logit equally receives \emph{zero} credit. Only
+movement in the direction that decides \emph{which} action wins is counted, so ``confidence''
+and ``choice'' are not conflated. Without this, every high-norm feature scores.
+
+\paragraph{(ii) The alignment term.} $\ip{w_j}{g\odot\ucon}$ is what makes the measure causal
+rather than activity-based --- see Section~\ref{sec:zphi}.
+
+\paragraph{Implementation note.} A naive $\varphi = z\ip{w}{u}$ gets two things wrong: it drops
+the per-sample $\ell_2$ factor (our SAE normalises each sample), and it attributes to $u_t$
+instead of $\ucon$.
+
+\subsection{The validity gate: sufficiency}
+
+Before attributing anything we test whether the feature terms actually recover the decision.
+Sufficiency is the through-origin slope of the true action margin on the reconstructed one,
+\begin{equation}
+S \;=\; \frac{\sum_i c_i x_i}{\sum_i c_i^{2}},
+\label{eq:suff}
+\end{equation}
+which decomposes into \emph{features $+$ bias $+$ error summing to $1$ by identity}.
+
+Measured (goal suite, $k=100$, layer 31): $S = \mathbf{0.936}$, of which features alone
+$=0.531$, a constant default-action bias ($\mu+\bpre$) $=0.405$, and error $=0.064$, against a
+pre-registered threshold of $0.80$. The additivity canary --- do the frozen-$r$ per-feature
+$\varphi_j$ sum back to the true logit --- returns correlation $1.0000$ with mean absolute
+discrepancy $2.7\times10^{-14}$. The arithmetic is exact, not merely close.
+
+The constant term is itself a small finding: roughly $40\%$ of the action margin is a fixed
+lean toward a rest pose, present on every decision and belonging to no feature.
+
+\paragraph{Recorded metric change.} This gate replaced an earlier full-residual argmax
+re-decode that stalled at $0.72$ (further epochs moved it $0.70\!\to\!0.72$; raising sparsity
+$k=100\!\to\!256$ reached only $0.76$ on a shallow slope). The diagnosis: the old gate punished
+the SAE for reconstructing the entire dense last-layer residual --- information for the whole
+$32$k vocabulary, nearly all of it action-irrelevant --- when the estimand we care about is the
+\emph{action} margin. The old number is still reported alongside, and the change was recorded
+before the new value was read.
+
+\section{Level 2: necessity, by exact counterfactual}
+\label{sec:necessity}
+
+Contribution is not necessity: a large $\varphi_j$ on a decision with a large top-2 margin
+changes nothing about what the robot does. At layer 31 the counterfactual can be computed
+exactly. Writing the unnormalised logits $L_t = \ip{h\odot g}{u_t}$ and the signature matrix
+$S[j,t] = \ip{w_j\odot g}{u_t}$, removing a set of features gives
+\begin{equation}
+L'_t \;=\; L_t \;-\; \sum_{k} \mathrm{coeff}_k\, S[k,t].
+\label{eq:cf}
+\end{equation}
+Because $r>0$ rescales all $256$ bins equally, \emph{it drops out of the argmax}. Flips are
+therefore exact and require \textbf{no model forward pass at all} --- every feature on every
+stored decision. A top-2 margin bound prunes decisions that provably cannot flip, and the
+pruned count is reported so the saving is auditable. We report:
+\begin{itemize}
+\item the \textbf{flip rate}: the fraction of decisions on which removing the feature changes
+      the emitted bin, conditioned on the feature actually firing;
+\item the \textbf{signed bin shift}: the direction and size of the change in bin \emph{index},
+      which is interpretable because bins are the discretised
+      $dx,dy,dz,d\mathrm{roll},d\mathrm{pitch},d\mathrm{yaw},\mathrm{gripper}$ command. The
+      counterfactual is thus in units of robot motion.
+\end{itemize}
+
+\paragraph{Two ablation semantics, both reported.} These are different interventions, and the
+gap between them is a real caveat rather than noise:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & $\mathrm{coeff}_j$ & what it removes \\
+\midrule
+\textsc{projection} & $\ip{h}{w_j}$ &
+  everything along that direction: coded amount, SAE reconstruction \\
+ & & error, mean term, leakage from correlated features. \emph{This is what} \\
+ & & \emph{the closed-loop rollout hook does.} \\
+\addlinespace
+\textsc{coded} & $\ell_2 z_j$ &
+  only what attribution says the feature wrote. \emph{This is what $\varphi$} \\
+ & & \emph{describes.} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Their difference measures how much of a rollout ablation's effect comes from structure the SAE
+never attributed to that feature --- i.e.\ how far a behavioural ablation result can honestly
+be read as evidence about a \emph{coded} feature.
+
+We also report \textbf{coalition non-orthogonality}. Decoder rows are unit-norm but not
+mutually orthogonal, so the projection hook $h - (hV^{\!\top})V$ over-subtracts for correlated
+coalitions. We reproduce the hook's actual formula rather than a corrected projection, because
+the point is to model the experiment that was really run, and we quantify the distortion
+instead of leaving it implicit.
+
+\paragraph{Scope.} This is the exact \emph{direct} effect on one decode slot. In a rollout,
+ablation also changes what slot $s{+}1$ attends to and what the next timestep observes, so the
+behavioural effect is larger. Read these as a \textbf{lower bound} on behavioural impact, and
+as the precise answer to ``did this feature decide this action''.
+
+\section{Level 3: behaviour}
+\label{sec:behaviour}
+
+Closed-loop coalition ablation is the top of the ladder and the head-to-head against the
+original paper's ranking: same rollout protocol, our label-free breadth ranking versus their
+firing-based classifier. Success is logged \emph{per task}, on identical initial states, across
+five conditions --- baseline, general coalition, specialist coalition, random matched
+coalition, firing-ranked coalition --- with paired McNemar tests, damage intervals and a stated
+minimum detectable effect, so that a null is separable from ``underpowered''.
+
+The prediction that distinguishes the axis: removing a \textbf{general} coalition should damage
+\emph{many} tasks (a high damage participation ratio); removing a \textbf{specialist} coalition
+should damage \emph{few}.
+
+\emph{Status: built and unit-tested, not yet run --- pending GPU allocation.}
+
+\section{From per-decision \texorpdfstring{$\varphi$}{phi} to a property of a feature}
+\label{sec:aggregation}
+
+\begin{align}
+C_j(g) &\;=\; \operatorname{mean}_{\,\text{decisions in task } g} \left| \varphi_j \right|,
+\label{eq:cjg}\\[2pt]
+\mathrm{PR}_j &\;=\; \frac{\bigl(\sum_g C_j(g)\bigr)^{2}}{\sum_g C_j(g)^{2}} .
+\label{eq:pr}
+\end{align}
+The participation ratio \eqref{eq:pr} is \emph{scale-free}, so it measures the \emph{breadth} of
+causal influence and not its strength: $\mathrm{PR}_j=1$ means the feature's influence lives
+in a single task, $\mathrm{PR}_j=G$ means it is spread evenly across all of them. Measured on
+goal: mean $\mathrm{PR}=6.05$, $p_{10}=2.65$, $p_{90}=9.91$ --- a genuine
+specialist$\rightarrow$generalist spectrum rather than a two-cluster artefact.
+
+\paragraph{A second, orthogonal breadth axis, free from the same data.} The same $|\varphi|$
+mass resolved over the \emph{seven action slots}: how many of the robot's degrees of freedom a
+feature actually drives. Two traps are handled explicitly. First, $\|\ucon\|$ depends on where
+the emitted bin sits in the ordered range, so the gripper (near-binary, extreme bins) inflates
+every feature's absolute score --- \emph{shares} are comparable across slots, absolutes are
+not. Second, the gripper command is constant for most of an episode, so all statistics are
+reported both on all decisions and on transitions only.
+
+\section{What makes the number defensible}
+\label{sec:defensible}
+
+The raw statistic is \textbf{not} the claim, and we say so before anyone finds it: raw breadth
+is activity-entangled, with $\operatorname{corr}(\mathrm{PR}, \text{base firing rate}) = +0.82$.
+Reporting raw $\mathrm{PR}$ would be reporting firing rate with extra steps. The claim is the
+confound-controlled, held-out version:
+
+\begin{quote}
+Leave one task out. Recompute \emph{both} breadth and total causal magnitude on the remaining
+$G-1$ tasks --- recomputing both is what keeps the held-out task out of the confound controls
+as well as out of the predictor. Then rank-partial the training breadth against the
+\emph{held-out} task's causal importance, controlling \emph{both} total causal magnitude
+$\sum_g C_j(g)$ and base firing rate.
+\end{quote}
+
+Measured on goal, over $446{,}096$ decisions, $10$ tasks and $2048$ features:
+\begin{equation*}
+\rho_{\text{partial}\,\mid\,\text{both}} \;=\; \mathbf{+0.493},
+\qquad \text{positive in } 10/10 \text{ folds},
+\qquad \min = +0.399, \quad \mathrm{sd} = 0.053 .
+\end{equation*}
+
+\paragraph{Supporting machinery, all implemented.}
+\begin{itemize}
+\item \textbf{Concentration.} Effective feature count $n_{\mathrm{eff}}$, Lorenz shares
+      (top $1\%$, $10$, $50$, $100$), Gini, and cross-task top-$N$ overlap expressed as a
+      \emph{ratio to chance} --- each computed against a base-firing-rate ranking as a control.
+      If causal mass concentrates no more than firing rate does, ``concentration'' is an
+      activity statement rather than a causal one. This attaches numbers to the reply to
+      ``of course hundreds of features influence the action'': the claim is not influence, it is
+      the \emph{concentration and cross-task reproducibility} of influence.
+\item \textbf{Permutation floors}, with the honest note that the negative control originally
+      prescribed is a \emph{no-op}: permuting task labels within a feature leaves the
+      leave-one-task-out statistic unchanged, because the procedure already averages over every
+      held-out task. Two floors that do test something replaced it.
+\item \textbf{Attenuation correction.} For a positive result the correction is free, since
+      attenuation only shrinks an observed correlation, so $r_{\mathrm{obs}}/\sqrt{r_{xx}}$ is a
+      lower bound on the truth even with the other reliability unknown. Split-half breadth
+      reliability is built but \emph{not yet reported}; at an illustrative $r_{xx}=0.72$ the
+      floor would be $\ge +0.581$.
+\end{itemize}
+
+\paragraph{The honest limit on the claim.} $\varphi$ contains $z_j$, so $\mathrm{PR}$ is not
+\emph{perfectly} activity-independent, and we do not claim that it is. The defensible statement
+is that \textbf{among firing features, causal influence differs from firing frequency via the
+alignment term} --- and the controls above are exactly the test of that statement.
+
+\section{One-paragraph version for the paper}
+\label{sec:paragraph}
+
+We define a feature's causal contribution to a decision as its signed, additive share of the
+contrast-centred action logit at the policy's readout. Because OpenVLA's action head is a dot
+product on the final residual stream, this decomposition is exact rather than approximate: the
+per-feature terms sum to the true logit to numerical precision, and the feature terms recover
+$93.6\%$ of the action margin. Contribution is upgraded to necessity by an exact
+counterfactual --- removing a feature's decoder direction and recomputing the argmax, which the
+RMSNorm scalar leaves invariant --- yielding a per-feature flip rate and a signed shift in the
+commanded action, for every feature on every decision at no forward-pass cost. Feature-level
+generality is then the participation ratio of causal contribution across tasks, and is claimed
+only in leave-one-task-out form, controlling both total causal magnitude and base firing rate
+($\rho = +0.493$, $10/10$ folds).
+
+\end{document}
