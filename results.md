@@ -553,8 +553,29 @@ axis is solid (P1); the feature-level ranking is only weakly reproducible.** Two
    lower bound on |r_true|, which argues against a null rather than for one. Until recurrence
    reliability is measured, "recurrence ≠ generality" at the feature level is a claim about noisy
    measurements. (P7 addresses this at the role level, where it is much less exposed.)
-2. **Path A gets stronger for free.** Attenuation only ever weakens a correlation, so
-   +0.493 implies **|r_true| ≥ 0.819**.
+2. **Path A gets stronger for free.** Attenuation only ever weakens a correlation, so a
+   measured value obtained with a noisy instrument implies a larger true one:
+   `r_true = r_obs / sqrt(r_xx * r_yy)`, and substituting the most favourable `r_yy = 1` gives
+   a lower bound.
+
+   **Use the curvature-corrected correlation, not the original.** With P1b's +0.452 and
+   `r_xx` = 0.363 the bound is **|r_true| ≥ 0.750**. (An earlier version of this line used the
+   pre-correction +0.493 and reported ≥ 0.819; P1b's correction had not been propagated here.)
+
+   Two notes on how far to trust it. The base-rate leak in the adjusted reliability runs the
+   safe way — sharing information between halves inflates measured agreement, so the true
+   `r_xx` is probably below 0.363, which would raise the bound. And `r_true` ≤ 1 implies
+   `r_yy ≥ r_obs²/r_xx` = **0.563**, which is plausible for a quantity averaged over thousands
+   of within-task decisions, so the numbers are internally consistent. Do not pair the raw-PR
+   reliability (0.221) with this correlation: the LOTO estimator residualises the controls
+   internally, so the matched reliability is the adjusted one, and the mismatched pairing
+   demands an impossible `r_yy ≥ 1.10`.
+
+   Finally, this is an approximation rather than a theorem here. Classical attenuation assumes
+   a plain correlation between two parallel measurements with independent additive noise; ours
+   is a partial correlation, averaged over folds, with the predictor from nine tasks and the
+   target from one. Read ≥ 0.750 as "the latent relationship is substantially stronger than the
+   measured one", not as a precise bound.
 
 A practical corollary: the top-N coalition that was ablated was drawn from a ranking with
 reliability ~0.36, so part of the coalition is noise, which dilutes any real effect. Selecting
