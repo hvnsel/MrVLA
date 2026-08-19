@@ -1,0 +1,363 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\Rb}{\mathbb{R}}
+\newcommand{\dotp}[2]{\left\langle #1,\, #2 \right\rangle}
+\newcommand{\ucon}{u_{\mathrm{contrast}}}
+\newcommand{\bpre}{b_{\mathrm{pre}}}
+\newcommand{\xnorm}{x_{\mathrm{norm}}}
+
+\title{Causal contribution, from the ground up\\[2pt]
+       \large Where $\varphi$, $z$ and $\ell_2$ come from}
+\author{MrVLA}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This note builds the causal-contribution measure from the robot outward, in eight steps.
+Nothing is assumed except what a dot product is. The endpoint is the formula
+\[
+\varphi_j \;=\; \frac{\ell_2}{r}\, z_j \dotp{w_j}{g \odot \ucon},
+\]
+but the point of the note is that this formula is never \emph{chosen} --- it falls out of
+substituting one equation into another. Companion to
+\texttt{notes/causal\_contribution.tex}, which states the same result compactly for the paper.
+\end{abstract}
+
+\paragraph{Notation.} $\dotp{a}{b}$ is a dot product: multiply matching entries and add them
+all up, giving one number. $a \odot b$ is an \emph{entrywise} product: multiply entry~1 by
+entry~1, entry~2 by entry~2, and so on, giving a vector back with no summing. The two are
+related by a fact used repeatedly below,
+\begin{equation}
+\dotp{a \odot g}{b} \;=\; \dotp{a}{g \odot b},
+\label{eq:move}
+\end{equation}
+which just says a fixed entrywise scaling can be applied to either side of a dot product.
+
+\section{What the robot is actually doing}
+\label{sec:robot}
+
+At every timestep OpenVLA outputs seven numbers: how far to move in $x$, $y$ and $z$, how to
+rotate (roll, pitch, yaw), and whether to open or close the gripper.
+
+It does not emit these as raw continuous values. Each one is chosen from \textbf{256 discrete
+options}, called \emph{bins}. Bin~0 might mean ``move hard left'', bin~128 ``do not move'',
+bin~255 ``move hard right''.
+
+To choose, the model assigns all 256 bins a score and takes the largest:
+\begin{center}
+\begin{tabular}{@{}rcl@{}}
+\toprule
+bin & & score \\
+\midrule
+$0$   & $\rightarrow$ & $1.2$ \\
+$1$   & $\rightarrow$ & $0.8$ \\
+$\vdots$ & & $\vdots$ \\
+$173$ & $\rightarrow$ & $\mathbf{9.4}$ \quad $\leftarrow$ largest, so this is the action \\
+$\vdots$ & & $\vdots$ \\
+$255$ & $\rightarrow$ & $2.1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So the question \emph{``what caused this action?''} is really the question \textbf{``what
+pushed bin 173's score above all the others?''} Everything that follows is an answer to that
+question and nothing more.
+
+\section{Where the scores come from}
+\label{sec:scores}
+
+At the final layer the model holds a single vector $h \in \Rb^{d}$ --- roughly $4096$ numbers.
+It is the model's complete internal state at the instant of the decision.
+
+Every bin $t$ owns a fixed vector $u_t \in \Rb^{d}$, learned during pre-training and unchanged
+at inference. The score for bin $t$ is a dot product of the two, with a normalisation applied
+to $h$ first:
+\begin{equation}
+\operatorname{score}(t) \;=\; \dotp{\tfrac{h}{r} \odot g}{u_t}.
+\label{eq:score}
+\end{equation}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+symbol & size & changes per decision? \\
+\midrule
+$h$   & $d$ numbers & yes --- the state right now \\
+$r$   & $1$ number  & yes --- a scale factor computed from $h$ \\
+$g$   & $d$ numbers & no --- a fixed learned gain, applied entrywise \\
+$u_t$ & $d$ numbers & no --- bin $t$'s fixed vector \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The single most important fact in this note.} Between $h$ and the score there is
+\emph{nothing but multiplying and adding}. No ReLU, no attention, no nonlinearity of any kind.
+
+The consequence is what the entire method rests on: \textbf{if you can split $h$ into pieces,
+the score splits into matching pieces.} Cut $h$ into three parts and each part contributes its
+own share of the score, and those three shares add back to the total \emph{exactly} --- not
+approximately. This is why we work at the last layer, and only at the last layer. Anywhere
+earlier there are nonlinearities in the way and the split would have to be estimated instead.
+
+\section{The SAE splits \texorpdfstring{$h$}{h} into pieces}
+\label{sec:sae}
+
+The sparse autoencoder is a dictionary of $F = 2048$ directions $w_1, \dots, w_{F}$. Each
+$w_j$ lives in the same $\Rb^{d}$ as $h$, and each has length exactly $1$. Think of them as
+ingredients.
+
+On any single decision only $k = 100$ of the $2048$ are switched on. The SAE's claim is:
+\[
+h \;\;\approx\;\; (\text{some amount of } w_5) \;+\; (\text{some amount of } w_{88})
+   \;+\; \cdots \text{100 terms} \cdots \;+\; \text{leftovers}.
+\]
+
+The ``some amount of'' numbers are the code $z$:
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\multicolumn{2}{@{}l}{$z \in \Rb_{\ge 0}^{F}$, one entry per ingredient} \\
+\midrule
+$z_j$ & how much of ingredient $j$ is present in $h$ right now \\
+      & at most $100$ of the $2048$ entries are nonzero \\
+      & never negative \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+That is all $z$ is: \textbf{presence}. How much of each ingredient is in the mix.
+
+\section{The size problem, and where \texorpdfstring{$\ell_2$}{l2} comes from}
+\label{sec:l2}
+
+Here is the wrinkle. The SAE was never trained on $h$ directly. It was trained only on vectors
+of \textbf{length exactly $1$}.
+
+The reason is practical. $h$ is loud on some decisions and quiet on others, and that overall
+loudness is not interesting --- we do not want the dictionary spending its capacity describing
+volume. So the loudness is stripped off before encoding and added back afterwards. Three steps
+(this is \texttt{\_prenorm} in \texttt{mrvla/train\_sae.py}):
+
+\begin{enumerate}
+\item Subtract $\bpre$, a fixed learned offset, the same on every decision.
+\item Subtract $\mu$, the average of the vector's own entries, so that they now sum to zero.
+      Note $\mu$ is \emph{one number}, subtracted from all $d$ entries --- which is why it
+      appears as $\mu\mathbf{1}$ later, with $\mathbf{1} \in \Rb^{d}$ the all-ones vector.
+\item Divide by the vector's own length. It now has length exactly $1$. Call the result
+      $\xnorm$.
+\end{enumerate}
+
+\begin{equation}
+\boxed{\;\ell_2 \;=\; \bigl\| \, h - \bpre - \mu\mathbf{1} \, \bigr\|_2\;}
+\qquad\text{--- the length we divided by in step 3.}
+\label{eq:l2}
+\end{equation}
+
+One positive number, different on every decision. Loud decision, large $\ell_2$.
+
+To recover the real $h$, undo the three steps: multiply by $\ell_2$ and add the pieces back.
+\begin{equation}
+h \;=\; \underbrace{\ell_2 \sum_{j=1}^{F} z_j w_j}_{\text{the ingredients, rescaled}}
+\;+\; \mu\mathbf{1} \;+\; \bpre \;+\; \underbrace{e}_{\text{error}} .
+\label{eq:sae}
+\end{equation}
+
+In words: \emph{$h$ is a weighted mix of 100 ingredients, scaled back up to full size, plus a
+fixed offset, plus whatever the SAE could not capture.} Equation~\eqref{eq:sae} is the one
+everything else is built on.
+
+\subsection*{Two scale factors, easily confused}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+ & comes from & is \\
+\midrule
+$\ell_2$ & the SAE   & $\|h - \bpre - \mu\mathbf{1}\|_2$, the per-sample normaliser \\
+$r$      & the model & $\sqrt{\operatorname{mean}(h^{2}) + \varepsilon}$, the RMSNorm denominator \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Both are one positive number per decision. They come from different places and mean different
+things, and both appear in the final formula. Interchanging them is a silent bug.
+
+\section{How \texorpdfstring{$z$}{z} is actually computed}
+\label{sec:z}
+
+$z$ is not fitted or solved for per decision. It is one matrix multiply followed by a sort:
+
+\begin{enumerate}
+\item Start from $\xnorm$ --- that is $h$ after the three stripping steps, so it has length $1$.
+\item Score how well each of the $2048$ ingredients matches it:
+      \[
+      \mathrm{pre}_j \;=\; \dotp{\mathrm{enc}_j}{\xnorm}, \qquad j = 1, \dots, F,
+      \]
+      where $\mathrm{enc}_j$ is column $j$ of the learned encoder matrix $W_{\mathrm{enc}}$.
+\item Keep the $k = 100$ largest of those scores. Set the other $1948$ to \emph{exactly} zero.
+\item Clip anything negative to zero (ReLU). What remains is $z$.
+\end{enumerate}
+
+So $z_j$ is nonzero only if ingredient $j$ was among the $100$ best matches on that decision.
+The sparsity is \textbf{architectural} --- a hard ``keep 100, delete the rest'' --- rather than
+a penalty that merely encourages small values. That is the TopK design of Gao et al.\ (2024),
+and it means $k$ is exact and there is no shrinkage bias on the surviving values.
+
+\paragraph{Nothing is trained at attribution time.} The dictionary itself ($W_{\mathrm{enc}}$,
+$W_{\mathrm{dec}}$, $\bpre$) is learned once, ahead of time, from collected activations. To
+attribute, we run this forward pass on each stored $h$ and record $z$, $\mu$ and $\ell_2$
+alongside it.
+
+\section{Deriving the formula}
+\label{sec:derivation}
+
+We now have both halves:
+\begin{align}
+\text{the score:} \qquad & \operatorname{score}(t) = \dotp{\tfrac{h}{r} \odot g}{u_t}
+  \tag{\ref{eq:score}} \\
+\text{the split:} \qquad & h = \ell_2 \sum_j z_j w_j + \mu\mathbf{1} + \bpre + e
+  \tag{\ref{eq:sae}}
+\end{align}
+Substitute the second into the first, in four steps.
+
+\subsection*{Step A --- only differences between bins matter}
+
+The winner is whichever bin scores highest. Adding the same constant to all $256$ scores does
+not change the winner. So the absolute score is not the interesting quantity; the \emph{gap
+above the average bin} is.
+
+Define the contrast direction by subtracting the average of all $256$ bin vectors,
+\begin{equation}
+\ucon \;=\; u_t \;-\; \frac{1}{256}\sum_{s=1}^{256} u_s ,
+\label{eq:ucon}
+\end{equation}
+and define $\Lambda$ as the emitted bin's gap above the average score. Using \eqref{eq:move} to
+move $g$ across the dot product,
+\begin{equation}
+\Lambda \;=\; \operatorname{score}(t) - \frac{1}{256}\sum_{s}\operatorname{score}(s)
+        \;=\; \frac{1}{r}\dotp{h}{g \odot \ucon}.
+\label{eq:lambda}
+\end{equation}
+
+$\Lambda$ is \textbf{the quantity that decides the action}, and it is what we attribute.
+Anything that lifts all $256$ bins equally now scores zero, because it cancels in the
+subtraction. Only things that pick a \emph{favourite} count. This is why the measure separates
+``choice'' from ``confidence'' --- and why a naive attribution to $u_t$ rather than $\ucon$
+gives every high-norm direction a score it has not earned.
+
+\subsection*{Step B --- substitute}
+
+Replace $h$ in \eqref{eq:lambda} using \eqref{eq:sae}:
+\begin{equation}
+\Lambda \;=\; \frac{1}{r}\dotp{\;\ell_2 \sum_j z_j w_j \;+\; \mu\mathbf{1} \;+\; \bpre \;+\; e\;}{\,g \odot \ucon\,}.
+\label{eq:subbed}
+\end{equation}
+
+\subsection*{Step C --- distribute}
+
+A dot product distributes over addition, $\dotp{a+b}{c} = \dotp{a}{c} + \dotp{b}{c}$. That is
+the only real move in the whole derivation. Pulling \eqref{eq:subbed} apart term by term:
+\begin{equation}
+\Lambda \;=\;
+\underbrace{\sum_{j} \frac{\ell_2}{r}\, z_j \dotp{w_j}{g \odot \ucon}}_{\text{the ingredients}}
+\;+\;
+\underbrace{\frac{1}{r}\dotp{\mu\mathbf{1} + \bpre}{g \odot \ucon}}_{\text{the fixed offset}}
+\;+\;
+\underbrace{\frac{1}{r}\dotp{e}{g \odot \ucon}}_{\text{the leftovers}} .
+\label{eq:decomp}
+\end{equation}
+
+\subsection*{Step D --- name it}
+
+\begin{equation}
+\boxed{\;\varphi_j \;=\; \frac{\ell_2}{r}\, z_j \dotp{w_j}{g \odot \ucon}\;}
+\label{eq:phi}
+\end{equation}
+
+That is it. $\varphi_j$ is one term of the first sum in \eqref{eq:decomp}. Nothing was invented
+or chosen: it fell out of substituting one equation into another and distributing.
+
+\section{Reading the formula}
+\label{sec:reading}
+
+\begin{equation*}
+\varphi_j \;=\;
+\underbrace{\frac{\ell_2}{r}}_{\text{(1) unit conversion}}
+\;\cdot\;
+\underbrace{\vphantom{\frac{\ell_2}{r}}\; z_j \;}_{\text{(2) presence}}
+\;\cdot\;
+\underbrace{\vphantom{\frac{\ell_2}{r}}\; \dotp{w_j}{g \odot \ucon} \;}_{\text{(3) geometry}}
+\end{equation*}
+
+\paragraph{(1) $\ell_2/r$ --- unit conversion.} $\ell_2$ converts out of the SAE's
+length-one world back to real size; $1/r$ converts from residual units into score units.
+Together they only ensure the number means ``score points''.
+
+\paragraph{(2) $z_j$ --- presence.} How much of ingredient $j$ is in the mix right now.
+\textbf{This factor, alone, is what a firing-based metric looks at.}
+
+\paragraph{(3) $\dotp{w_j}{g \odot \ucon}$ --- geometry.} Does ingredient $j$'s direction point
+towards the bin that won, as against the average bin? This is what makes the measure
+\emph{causal}, and it is the part a firing-based metric has no access to.
+
+\medskip
+\noindent
+The consequence is the argument of the paper in two lines:
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+condition & result & name \\
+\midrule
+$z_j$ large, factor (3) $\approx 0$ & $\varphi_j \approx 0$ &
+  \textbf{busy but inert} --- fires constantly, changes nothing \\
+$z_j$ rarely on, factor (3) large & $\varphi_j$ large when it fires &
+  \textbf{rare but decisive} --- seldom fires, but flips the action \\
+\bottomrule
+\end{tabular}
+\end{center}
+\noindent
+A firing metric sees only column (2). It therefore calls the first case important and misses
+the second entirely.
+
+\section{Why this is checkable rather than merely plausible}
+\label{sec:check}
+
+Because Step~C was pure algebra, the three groups in \eqref{eq:decomp} \emph{must} sum to
+$\Lambda$. So one can measure what fraction of the decision each group accounts for, and the
+three fractions are forced to sum to $1$. Measured on the goal suite at layer 31 with $k=100$:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+group & share of the decision \\
+\midrule
+ingredients (the features)          & $0.531$ \\
+fixed offset ($\mu\mathbf{1} + \bpre$) & $0.405$ \\
+leftovers (SAE error $e$)           & $0.064$ \\
+\midrule
+total                               & $1.000$ \quad \emph{by construction} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+This is the \textbf{sufficiency gate}: features plus offset account for $0.936$ of the
+decision, against a threshold of $0.80$ fixed in advance. The middle row is itself a small
+finding --- roughly $40\%$ of the action margin is a constant lean toward a rest pose, present
+on every decision and belonging to no feature at all.
+
+A separate check confirms the arithmetic itself. Recomputing $\Lambda$ by summing the
+$\varphi_j$ and comparing against the true value gives a mean absolute discrepancy of
+$2.7 \times 10^{-14}$ --- floating-point dust. The decomposition is not close; it is exact.
+
+\end{document}
