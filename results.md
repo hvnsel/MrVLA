@@ -254,6 +254,26 @@ within-column link (an evenly spread column still has a predictable held-out ent
 destroying a feature's identity across tasks. Whatever survives is arithmetic. The feature
 shuffle is the estimator floor and must be ~0 or the estimator is biased; it is.
 
+### P1a. The negative control §3.2b prescribed is a no-op (methods finding)
+
+The plan called for permuting task labels and expected a collapse to ~0. Permuting task labels
+*within a feature* does not collapse anything, because LOTO already evaluates every fold:
+permuting column *j* makes fold *g* contribute the pair that fold π(g) contributed in the real
+data — the same G pairs, dealt into different folds. Measured on our own data:
+
+| suite | observed | task-label permutation |
+|---|---|---|
+| goal | +0.4926 | **+0.4840** |
+| spatial | +0.4488 | **+0.4508** |
+| object | +0.3866 | **+0.3843** |
+| libero-10 | +0.5347 | **+0.5327** |
+
+Running the control as written would have returned "the null equals the result" and looked like
+the headline collapsing, when the permutation destroys nothing the statistic depends on.
+Recorded so it is not re-attempted.
+
+---
+
 ### P1b. The control plane was too simple, and it was inflating every suite by ~10%
 
 `partial | both` residualises ranked breadth and the ranked held-out row on the PLANE spanned by
@@ -323,26 +343,6 @@ and correlates with nothing. A hygiene fix, not a correctness threat.
 on a noisy control under-removes it — also biasing toward a positive partial. That requires a
 reliability estimate on `mag_tr` and `base_rate` which we do not have, and it stays a stated
 caveat rather than a resolved one.
-
-### P1a. The negative control §3.2b prescribed is a no-op (methods finding)
-
-The plan called for permuting task labels and expected a collapse to ~0. Permuting task labels
-*within a feature* does not collapse anything, because LOTO already evaluates every fold:
-permuting column *j* makes fold *g* contribute the pair that fold π(g) contributed in the real
-data — the same G pairs, dealt into different folds. Measured on our own data:
-
-| suite | observed | task-label permutation |
-|---|---|---|
-| goal | +0.4926 | **+0.4840** |
-| spatial | +0.4488 | **+0.4508** |
-| object | +0.3866 | **+0.3843** |
-| libero-10 | +0.5347 | **+0.5327** |
-
-Running the control as written would have returned "the null equals the result" and looked like
-the headline collapsing, when the permutation destroys nothing the statistic depends on.
-Recorded so it is not re-attempted.
-
----
 
 ## P2. Concentration and reproducibility of causal influence, quantified
 
