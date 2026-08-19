@@ -562,20 +562,43 @@ axis is solid (P1); the feature-level ranking is only weakly reproducible.** Two
    `r_xx` = 0.363 the bound is **|r_true| ≥ 0.750**. (An earlier version of this line used the
    pre-correction +0.493 and reported ≥ 0.819; P1b's correction had not been propagated here.)
 
-   Two notes on how far to trust it. The base-rate leak in the adjusted reliability runs the
-   safe way — sharing information between halves inflates measured agreement, so the true
-   `r_xx` is probably below 0.363, which would raise the bound. And `r_true` ≤ 1 implies
-   `r_yy ≥ r_obs²/r_xx` = **0.563**, which is plausible for a quantity averaged over thousands
-   of within-task decisions, so the numbers are internally consistent. Do not pair the raw-PR
-   reliability (0.221) with this correlation: the LOTO estimator residualises the controls
-   internally, so the matched reliability is the adjusted one, and the mismatched pairing
-   demands an impossible `r_yy ≥ 1.10`.
+   **Do not publish 0.750 as a number.** The DIRECTION is a theorem — measurement noise can
+   only ever weaken a correlation, so the latent relationship is stronger than the measured
+   +0.452. The MAGNITUDE rests on three things that do not hold cleanly here.
 
-   Finally, this is an approximation rather than a theorem here. Classical attenuation assumes
-   a plain correlation between two parallel measurements with independent additive noise; ours
-   is a partial correlation, averaged over folds, with the predictor from nine tasks and the
-   target from one. Read ≥ 0.750 as "the latent relationship is substantially stronger than the
-   measured one", not as a precise bound.
+   *Two biases in `r_xx`, running opposite ways and neither measured.* The base-rate leak
+   inflates measured agreement, so true `r_xx` may be below 0.363 (raising the bound). But
+   Spearman–Brown assumes the halves differ from the full measurement only in LENGTH, and
+   halving 10 tasks to 5 also halves PR's ceiling, compressing the scale; on a toy with this
+   geometry SB underestimated by a factor of 1.32, which would put `r_xx` near 0.479 and the
+   bound near 0.653. Across a plausible range the bound spans **0.58 to 0.90**.
+
+   *The true-score assumption may not hold.* Classical test theory needs a fixed true value
+   with random error around it. Participation ratio is defined RELATIVE TO THE TASK SET. If
+   breadth genuinely differs across task sets — which `split_half_breadth.py`'s own docstring
+   raises as a possible outcome and which was never resolved — then split-half disagreement is
+   real variation rather than error, and disattenuating it is not valid at all.
+
+   *Errors are plausibly correlated.* Attenuation requires the predictor's error and the
+   target's error to be independent. LOTO makes the TASKS disjoint, but both quantities come
+   from the same SAE, the same decoder direction, the same unembedding and the same rollouts,
+   so a poorly-learned feature direction corrupts φ on both sides identically. Correlated
+   errors inflate `r_obs`, and correcting upward from an inflated value compounds rather than
+   removes the error. This is the one whose direction is actively unfavourable.
+
+   *Bookkeeping, for whoever revisits this.* `r_true ≤ 1` implies `r_yy ≥ r_obs²/r_xx` =
+   0.563, which is plausible for a quantity averaged over thousands of within-task decisions,
+   so the arithmetic is at least internally consistent. Do not pair the raw-PR reliability
+   (0.221) with this correlation — the LOTO estimator residualises the controls internally, so
+   the matched reliability is the adjusted one, and the mismatched pairing demands an
+   impossible `r_yy ≥ 1.10`.
+
+   **The check that would settle the first two.** Vary the split size (2-vs-2, 3-vs-3, 4-vs-4,
+   5-vs-5) and Spearman–Brown-correct each back to full length. Flat across sizes ⇒ the
+   parallel-forms model fits and the correction is defensible. Drifting upward with size ⇒ SB
+   is biased here and the trend gives the true full-length value. Low at every size ⇒ breadth
+   is genuinely task-set-relative and the correction must not be applied. CPU, on the existing
+   npz.
 
 A practical corollary: the top-N coalition that was ablated was drawn from a ranking with
 reliability ~0.36, so part of the coalition is noise, which dilutes any real effect. Selecting
