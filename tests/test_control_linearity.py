@@ -64,7 +64,7 @@ def _curved(G=10, F=2048, seed=1):
 def test_clean_data_is_called_adequate():
     C, br = _clean()
     res = analyse("clean", C, br, _args())
-    assert res["verdict"].startswith("PLANE ADEQUATE"), res["verdict"]
+    assert res["verdict"] == "curvature below tolerance", res["verdict"]
     assert res["max_excess"] < 0.05, res["max_excess"]
     # and no basis moved the answer: the whole ladder agrees to within noise
     partials = [r["partial"] for r in res["rows"]]
@@ -74,7 +74,7 @@ def test_clean_data_is_called_adequate():
 def test_curved_data_is_flagged():
     C, br = _curved()
     res = analyse("curved", C, br, _args())
-    assert res["verdict"].startswith("CURVATURE MATERIAL"), res["verdict"]
+    assert res["verdict"] == "CURVATURE MATERIAL", res["verdict"]
     assert res["max_excess"] > 0.05, res["max_excess"]
 
 
@@ -87,6 +87,19 @@ def test_verdict_uses_the_whole_ladder_not_just_the_richest_basis():
     assert rich["excess"] < 0.05, "fixture changed: the richest basis now catches it directly"
     assert res["max_excess_spec"] != res["richest"]
     assert res["max_excess"] > 3 * rich["excess"]
+
+
+def test_reported_number_is_a_fixed_basis_not_the_ladder_minimum():
+    """A minimum over five noisy estimates of one quantity is biased downward by the selection
+    itself, so the published figure must come from a basis fixed in advance. Both are emitted;
+    only one is labelled for reporting."""
+    C, br = _curved()
+    res = analyse("curved", C, br, _args())
+    rich = next(r for r in res["rows"] if r["spec"] == res["richest"])
+    assert res["reported_spec"] == res["richest"]
+    assert res["reported_partial"] == rich["partial"]
+    assert res["min_partial"] <= res["reported_partial"]
+    assert res["enriched_spread"] >= 0.0
 
 
 def test_placebo_tracks_the_linear_number_not_the_enriched_one():

@@ -41,8 +41,16 @@ fixture `quad` moves the number by 0.18 while `tensor4` moves it by only 0.02, s
 richest rung alone would have missed it.
 
   max excess ~ 0    -> the plane was adequate; report the linear number, cite this as a footnote.
-  max excess large  -> curvature was inflating the headline; the most conservative number over
-                       the ladder is the honest one and the paper must be rewritten around it.
+  max excess large  -> curvature was inflating the headline and the enriched estimate is the
+                       honest one.
+
+WHICH NUMBER TO PUBLISH
+-----------------------
+`--richest` (default tensor4), applied uniformly to every suite. NOT the minimum over the
+ladder: that is a minimum over several noisy estimates of one quantity, so the selection itself
+biases it downward -- by 0.003 to 0.006 on this data. The minimum is printed as a diagnostic
+bound on how far curvature could reach, and `enriched_spread` reports how much the basis choice
+actually matters (0.003 to 0.015 here, i.e. very little once any curvature is admitted).
 
 The POWER of this check -- that it fires when curvature is genuinely present -- is established
 in tests/test_rankbasis.py, where a purely curved confound yields +0.40 under the linear plane
@@ -148,13 +156,24 @@ def analyse(name: str, C, base_rate, args) -> dict:
     ties = {"base_rate": tie_fraction(base_rate),
             "magnitude": tie_fraction(C.sum(axis=0))}
 
-    verdict = ("PLANE ADEQUATE" if excess < args.tol else
-               "CURVATURE MATERIAL -- report the conservative number")
+    # The threshold is a convenience label, not the finding. What matters is the size of the
+    # correction and whether the enriched estimate still clears its floor; both are printed
+    # regardless of which side of `tol` a suite lands on.
+    verdict = ("curvature below tolerance" if excess < args.tol else
+               "CURVATURE MATERIAL")
     return {"name": name, "n_tasks": int(C.shape[0]), "n_features": int(C.shape[1]),
             "rows": rows, "richest": richest, "linear": lin, "richest_partial": rich["partial"],
             "max_excess": float(excess), "max_excess_spec": worst["spec"],
+            # The number to PUBLISH: one basis, fixed in advance, applied to every suite.
+            "reported_partial": rich["partial"], "reported_spec": richest,
+            "relative_correction": float((lin - rich["partial"]) / lin) if lin else float("nan"),
+            # DIAGNOSTIC ONLY. A minimum over several noisy estimates of the same quantity is
+            # biased downward by the selection itself, so this bounds the curvature's reach --
+            # it is not a figure to report.
             "min_partial": float(min(r["partial"] for r in rows)),
             "min_partial_spec": min(rows, key=lambda r: r["partial"])["spec"],
+            "enriched_spread": float(max(r["partial"] for r in rows[1:])
+                                     - min(r["partial"] for r in rows[1:])),
             "tolerance": args.tol, "verdict": verdict,
             "floor_richest_mean": floor_m, "floor_richest_sd": floor_s,
             "z_vs_floor_richest": (float((rich["partial"] - floor_m) / floor_s)
@@ -175,7 +194,10 @@ def report(res: dict) -> None:
     print(f"\n  linear {lin:+.4f}  ->  {res['richest']} {res['richest_partial']:+.4f}   "
           f"| worst basis {res['max_excess_spec']}: excess {res['max_excess']:+.4f} "
           f"(tolerance {res['tolerance']:.3f})")
-    print(f"  most conservative partial over the ladder: {res['min_partial']:+.4f} "
+    print(f"  REPORT: {res['reported_spec']} {res['reported_partial']:+.4f}  "
+          f"({res['relative_correction']:+.1%} vs linear); enriched bases agree to "
+          f"{res['enriched_spread']:.4f}")
+    print(f"  [diagnostic only, downward-biased] min over ladder {res['min_partial']:+.4f} "
           f"({res['min_partial_spec']})")
     print(f"  feature-shuffle floor under {res['richest']}: "
           f"{res['floor_richest_mean']:+.4f} (sd {res['floor_richest_sd']:.4f})  "
