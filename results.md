@@ -244,11 +244,85 @@ two permutation floors:
 p < 0.001 (1000 permutations) in every cell. **Causal task-breadth predicts held-out causal
 importance in all four suites, and the mechanical floor is zero.**
 
+> **These are the LINEAR-CONTROL values and every one of them is inflated by about a tenth.**
+> See P1b: the control plane cannot represent curvature, and there is curvature. The figures to
+> publish are +0.452 / +0.404 / +0.362 / +0.473.
+
 *The column shuffle is the floor that matters*: it permutes feature identity within each task
 row, preserving each task's marginal distribution of causal mass and the purely mechanical
 within-column link (an evenly spread column still has a predictable held-out entry) while
 destroying a feature's identity across tasks. Whatever survives is arithmetic. The feature
 shuffle is the estimator floor and must be ~0 or the estimator is biased; it is.
+
+### P1b. The control plane was too simple, and it was inflating every suite by ~10%
+
+`partial | both` residualises ranked breadth and the ranked held-out row on the PLANE spanned by
+ranked causal magnitude and ranked base firing rate. A plane represents only confounds that are
+linear in each control and additive between them. Participation ratio is capped at the task
+count (10) while magnitude is unbounded, so the relationship bends in rank space — and anything
+the plane cannot represent survives residualisation and is scored as signal. The bias runs
+*toward* the reported result, which is why this could not be left as an assumption.
+
+It is not a hypothetical failure mode. In `tests/test_rankbasis.py` a fixture whose **only**
+structure is a curved confound yields `partial | both` = **+0.40** under linear control — the
+same order as the numbers above — and under +0.12 under every enriched basis.
+
+`control_linearity.py` refits the identical estimator under progressively richer control bases
+(quadratic, cubic, piecewise-linear splines, and the full tensor product of two spline bases,
+which can absorb any smooth surface, additive or not):
+
+| suite | linear | **tensor4 (reported)** | correction | max excess | dR²(pred) | floor under tensor4 | z |
+|---|---|---|---|---|---|---|---|
+| goal | +0.4926 | **+0.4516** | −8.3% | +0.0460 | 0.107 | +0.0003 (sd 0.0063) | +71.9 |
+| spatial | +0.4488 | **+0.4036** | −10.1% | +0.0477 | 0.080 | +0.0006 (sd 0.0067) | +60.5 |
+| object | +0.3866 | **+0.3624** | −6.3% | +0.0267 | 0.106 | −0.0004 (sd 0.0070) | +52.0 |
+| libero-10 | +0.5347 | **+0.4725** | −11.6% | +0.0681 | 0.118 | +0.0008 (sd 0.0067) | +70.2 |
+
+**The curvature is real.** `dR²(pred)` is the extra variance the nonlinear terms explain when
+predicting ranked breadth from the controls: 8–12% in every suite. The largest correction lands
+on libero-10, the suite with both the highest linear partial and the most concentrated causal
+mass (n_eff 9.6 of 2048) — the configuration with the most room for a bend to distort.
+
+**It changes no conclusion.** Every suite still clears its floor at z = 52–72, the floor under
+the enriched estimator is still zero (so the richer basis bought no bias of its own), and all
+10 folds stay positive under all five bases.
+
+*Why a drop is not automatically evidence.* Extra columns lower an in-sample partial even when
+they are pure noise, so every basis is scored against a PLACEBO of the same column count drawn
+at random. The placebo moves the number by ≤0.0003 at 31 columns — essentially none of the
+observed 0.04–0.07 is degrees-of-freedom bookkeeping.
+
+*Which number to publish.* `tensor4`, fixed in advance and applied uniformly. **Not** the
+minimum over the ladder: that is a minimum over five noisy estimates of one quantity, so the
+selection biases it downward, by +0.003 to +0.006 here. The choice barely matters in any case —
+the four enriched bases agree to within 0.005 (0.015 on libero-10).
+
+*The assumption-free backstop.* `loto_stratified` bins features into 5×5 magnitude × base-rate
+quantile cells and takes a plain rank correlation inside each. Both controls are near-constant
+within a cell, so no functional form is assumed anywhere and curvature cannot produce the
+result:
+
+| suite | stratified | folds + | worst fold | cells/fold |
+|---|---|---|---|---|
+| goal | +0.347 | 10/10 | +0.256 | 19 |
+| spatial | +0.344 | 10/10 | +0.294 | 19 |
+| object | +0.281 | 10/10 | +0.256 | 20 |
+| libero-10 | +0.297 | 10/10 | +0.254 | 19 |
+
+Attenuated relative to the partial by construction — discarding between-cell variance in breadth
+throws away real signal — so this corroborates the sign and rules curvature out as *the*
+explanation; it is not expected to reproduce the headline magnitude.
+
+*Rank ties, for the record.* The shipped estimator breaks ties by array index rather than
+averaging them, and `base_rate` is a count over a fixed denominator so 6.6–10.6% of its values
+tie. Measured cost on this geometry: **~1e-5** — four orders of magnitude below anything that
+matters, because the arbitrary ordering is by SAE feature index, which is initialisation order
+and correlates with nothing. A hygiene fix, not a correctness threat.
+
+*What this does not address.* Both controls are measured with sampling noise, and residualising
+on a noisy control under-removes it — also biasing toward a positive partial. That requires a
+reliability estimate on `mag_tr` and `base_rate` which we do not have, and it stays a stated
+caveat rather than a resolved one.
 
 ### P1a. The negative control §3.2b prescribed is a no-op (methods finding)
 
