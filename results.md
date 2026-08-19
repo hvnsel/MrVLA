@@ -344,10 +344,25 @@ on a noisy control under-removes it — also biasing toward a positive partial. 
 reliability estimate on `mag_tr` and `base_rate` which we do not have, and it stays a stated
 caveat rather than a resolved one.
 
-## P2. Concentration and reproducibility of causal influence, quantified
+## P2. Concentration of causal influence, quantified
+
+> **DECIDED: the reproducibility half is retired; concentration ships as one paragraph.**
+> The cross-task overlap column below is recorded for the audit trail and **must not be
+> published** — see P2b. The coalition is the always-on set and `base_rate` is a single global
+> vector, so the recurrence is largely mechanical. The column shuffle is deflated by the same
+> mechanism and no longer adds anything beyond the activity control.
+>
+> What ships: `n_eff`, the top-k shares, per-task stability, and the activity control — the last
+> of which is the only part carrying non-trivial content, namely that causal mass is **not**
+> proportional to firing frequency. Read the 8.7x with the caveat that base rate is bounded in
+> [0,1] while mass is not, so the two distributions have different room to skew; it says these
+> are qualitatively different, not that the ratio is exact. The paragraph must disclose that the
+> most causally massive features largely coincide with the most frequently firing ones, so this
+> establishes the SHAPE of the influence distribution and not the recruitment of task-specific
+> machinery.
 
 §A6 answers "of course hundreds of features influence the action" with *"concentration and
-reproducibility of influence is the claim"*. Both words now have numbers.
+reproducibility of influence is the claim"*. Only the first word survived.
 
 | suite | effective #features (of 2048) | top-10 share | top-50 share | Gini | top-50 cross-task overlap |
 |---|---|---|---|---|---|
