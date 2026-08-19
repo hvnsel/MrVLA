@@ -370,7 +370,68 @@ not an averaging artefact.
 
 > **Flag for review.** libero-10's `n_eff` = 9.6 is extreme — ten features carrying a ten-task
 > long-horizon suite. The column-shuffle control (91.2) says the concentration is real rather
-> than marginal-driven, but this should be eyeballed before it goes in a paper.
+> than marginal-driven, but this should be eyeballed before it goes in a paper. Its jackknife
+> interval is [9.4, 9.8] (P2a), so the number is precisely estimated — whatever is going on is
+> a stable property of the data, not sampling noise.
+
+---
+
+### P2a. Error bars, the top-N knob, and a chance baseline that was assumed rather than measured
+
+Three gaps in the numbers above, all now closed (`concentration_robustness.py`, CPU).
+
+**The dictionary is fully used, so the chance baseline was right.** `N^2/F` assumes each task
+draws its top-N uniformly from all 2048 features; if far fewer were ever causally active the
+pool would be smaller and the reported ratios inflated. Measured: **2048 of 2048 features carry
+causal mass in every suite.** The empirical baseline — overlap after permuting feature identity
+within each task row, which inherits the pool, the marginals and the ties from the data —
+agrees with the analytic one throughout (1.21 vs 1.22 at N = 50). The ratios above stand.
+
+*This also resolves the k = 100 coincidence.* `n_eff` = 102.3 on goal is not a capacity
+artefact: every feature fires somewhere, so a TopK budget of 100 per decision does not pin it.
+It means something stronger — that close to the same 100 features are active decision after
+decision, out of 2048 available. Object (49.3) and libero-10 (9.6) land well below k, which
+rules out mechanical pinning.
+
+**Delete-one-task jackknife intervals.** Between-task variability only: the saved artefact is
+task-level, so within-task sampling noise is not recoverable and these are optimistic.
+
+| suite | n_eff | jk SE | 95% interval | Gini | top-50 share |
+|---|---|---|---|---|---|
+| goal | 102.3 | 4.92 | [92.6, 111.9] | 0.684 ± 0.004 | 0.448 ± 0.004 |
+| spatial | 105.9 | 1.62 | [102.7, 109.0] | 0.644 ± 0.002 | 0.436 ± 0.002 |
+| object | 49.3 | 0.94 | [47.4, 51.1] | 0.724 ± 0.002 | 0.494 ± 0.003 |
+| libero-10 | 9.6 | 0.09 | [9.4, 9.8] | 0.889 ± 0.002 | 0.731 ± 0.003 |
+
+Every pair separates **except goal vs spatial**, which overlap. Suites may now be compared, with
+that exception stated.
+
+**The top-N sweep, and what it does to the headline.** The ratio to chance decays monotonically
+with N in every suite — goal runs 183x, 73.5x, 34.2x, 16.6x, 8.4x, 3.5x across
+N = 10/25/50/100/200/400. That decay is the expected signature of a shared core with a diffuse
+periphery, and the overlap exceeds chance at every N (z = 178 to 291 throughout). But it means
+**"34x chance" is one point on a curve and N = 50 is an arbitrary choice**; quoting it alone is
+cherry-picking, since a reviewer running N = 200 gets 8.4x. Report the curve.
+
+**The number to lead with instead.** The union of the per-task top-N sets needs no baseline
+argument at all — it is a direct count, bounded by G*N:
+
+| N | chance union | goal | spatial | object | libero-10 | compression |
+|---|---|---|---|---|---|---|
+| 10 | 98 | **15** | **13** | **11** | **13** | 7.5x |
+| 25 | 237 | 40 | 30 | 33 | 33 | 7.0x |
+| 50 | 448 | 95 | 67 | 74 | 82 | 5.6x |
+
+Ten tasks, each task's ten most causally important features, and the union is **11 to 15
+features**. Chance (`F(1-(1-N/F)^G)`) would give 98.
+
+*A methods note on the empirical baseline.* Permuting across all F columns scatters mass into
+structurally dead features — a state no task can produce — which collapses the baseline back to
+`N^2/F` and reintroduces the assumption it exists to remove. On a fixture with 300 of 2048
+active it reports chance 1.20 where the truth is 8.33, inflating the ratio sevenfold. The
+permutation is confined to the active support; `tests/test_concentration_robustness.py` pins the
+broken variant. It happens not to matter here because all 2048 features are active, but it would
+have mattered silently in any suite where they were not.
 
 ---
 
