@@ -435,6 +435,57 @@ have mattered silently in any suite where they were not.
 
 ---
 
+### P2b. The recurring coalition is the always-on features (negative result)
+
+`coalition_identity.py`. P2's controls establish that causal mass is more *concentrated* than
+firing rate, but every one of them is a statement about the SHAPE of a distribution. None
+constrains the IDENTITY of the top set — mass concentrated on exactly the most frequently
+firing features would produce the identical n_eff, Gini and shuffle numbers. That reading was
+untested. It is now tested, and it is what the data show.
+
+| suite | top-50 by mass ∩ top-50 by base rate | Jaccard | coalition's base-rate percentile |
+|---|---|---|---|
+| goal | **41/50** (chance 1.22) | 0.695 | mean 98.6, **100%** above median |
+| spatial | **40/50** | 0.667 | mean 97.5, **100%** above median |
+| object | **42/50** | 0.724 | mean 97.8, **100%** above median |
+| libero-10 | **43/50** | 0.754 | mean 98.5, **100%** above median |
+
+**The coalition is the always-on set.** Every member of every suite's top-50 by causal mass
+sits in roughly the top 1.5% of firing frequency.
+
+**This breaks the reproducibility claim specifically.** `base_rate` is pooled over all decisions
+in the suite — it is ONE global vector, not a per-task quantity — so "top-50 by base rate" is
+the same set for every task by construction. If each task's mass ranking tracks that global
+firing ranking, high cross-task overlap follows mechanically. The 34x figure in P2 is therefore
+substantially measuring "causal mass tracks a task-independent quantity", not "the same task
+machinery is recruited across tasks". **P2's reproducibility claim cannot be reported as it
+stands.**
+
+The column shuffle does not catch this. It destroys feature identity, which shows concentration
+comes from identity — but it cannot distinguish *the same task-relevant features* from *the same
+always-on features*.
+
+**What survives.** Concentration. `n_eff(mass)` = 102.3 against `n_eff(base rate)` = 886.8 is a
+genuine contrast: mass is 8.7x more skewed than firing, so mean |phi|-when-firing is not
+constant across features. The membership of the top set is firing-determined; the shape of the
+distribution is not.
+
+**Path A is untouched, and this strengthens it.** Overlap between the mass coalition and the
+top-50 by *adjusted* breadth is **0/50 in every suite**, with the coalition sitting *below*
+median adjusted breadth (39.3 / 45.5 / 45.0 / 24.2 mean percentile). Path A residualised
+magnitude and base rate out from the start; this is direct evidence that the control was both
+necessary and effective. P1 and P2 are not two views of one object — they are two different
+objects, and P2's is the less interesting one.
+
+*Methods note on the definition.* The coalition is the top-N by POOLED mass, a pure magnitude
+criterion. Defining it instead as "features in every per-task top-N" would make the breadth
+question circular, since such a feature is forced to carry mass on every task, which is close to
+the definition of a high participation ratio. The strict per-task intersection is reported
+separately as a description of core stability: 30 / 36 / 35 / 32 features present in every
+task's top-50, union 95 / 67 / 74 / 82.
+
+---
+
 ## P3. The coalition ablation is a *bounded* null, not an absent effect
 
 `analyze_ablation.py` reported point estimates with no interval, no paired test and no power
