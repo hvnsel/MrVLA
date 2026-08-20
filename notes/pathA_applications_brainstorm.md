@@ -414,3 +414,39 @@ If only one sentence survives from this document:
 
 Everything in §3 is downstream of that sentence. Ideas 1–4 in the shortlist test it for very
 little money, and three of the four produce a reportable result on both branches.
+
+---
+
+## Addendum (2026-08): the action prior, and a gate ladder for it
+
+The brainstorm above characterises the FEATURE half of the margin. The other 0.405 is the
+`mu*1 + b_pre` bias, which nothing in the programme has examined. `mrvla/prior_gates.py` +
+`prior_gates.py` implement a five-gate ladder testing whether that bias is an ACTION PRIOR
+worth modulating. Rationale, derivation and the pre-registered bars live in the module
+docstring; three things belong here because they change the framing above.
+
+**The lever is a one-parameter family, not a constant.** Over the 256 bins the prior is
+`mu*A(t) + B(t)` with `A(t) = <g, u_c(t)>` and `B(t) = <b_pre, gu(t)>` fixed and `mu`
+per-decision. So the preferred bin can genuinely move with `mu` — richer than "a fixed
+direction with varying gain", and Gate 2 measures whether it does in practice.
+
+**`r` drops out of Gates 2-4.** It divides the feature and prior terms alike, so it cancels
+from the share and cannot change an argmax. Those gates inherit none of the frozen-`r` caveat.
+
+**OpenVLA-OFT reframes what Path A is measuring.** OFT lifts LIBERO 76.5% -> 97.1% by changing
+only the readout — parallel decoding, action chunking, continuous L1 regression — against a
+5-point drop when the pretrained representation is ablated. So roughly twenty points sit
+between what the representation knows and what the discretised autoregressive readout
+delivers. Path A's decomposition lives exactly on that boundary, which makes readout edits a
+better-motivated intervention than steering the representation.
+
+**What the ladder cannot do, and the asset that would fix it.** A1 replays demonstrations, so
+`success` is the constant 1 (`mrvla/libero_demos.py:96`) and the only target available is
+single-step deviation from the expert AT EXPERT STATES — a necessary condition for any success
+claim and not evidence for one. Failure labels exist only in `run_ablation.py`'s per-episode
+JSONs, on rollouts that saved no activations. **Internals and outcomes are in disjoint datasets
+and have never been joined.** One closed-loop collection with action-position residuals and
+success labels unblocks this ladder's Gates 5-7, the near-tie triage idea, the `mu_t` monitor
+(D2) and the reranking test (D1) simultaneously — `mrvla/libero_collect.py` already has the
+buffer-until-episode-end pattern it needs. That single asset, not any individual hypothesis,
+is the gating item for the whole success-rate direction.
