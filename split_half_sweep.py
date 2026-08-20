@@ -60,10 +60,24 @@ task-set-relative, splits that happen to be regime-matched agree far better than
 ones, so rho's spread inflates -- on a synthetic two-regime matrix the ratio to calibration runs
 1.6x to 3.8x and RISES with split size, while a classical matrix sits at 0.8x to 1.1x.
 
-    sd ratio ~ 1        -> consistent with a fixed true score measured noisily.
-    sd ratio >> 1       -> breadth depends on WHICH tasks were used; disattenuation is not
-                           merely imprecise but invalid, since the disagreement is real
-                           variation rather than error.
+Two reference points, both measured on DENSE synthetic matrices matched to this data's
+geometry (every feature carrying mass in every task, breadth living in the unevenness):
+
+    a fixed true score measured noisily     -> sd ratio ~ 1.4
+    two regimes with uncorrelated breadth   -> sd ratio ~ 13.8
+
+The separation is an order of magnitude, so a value near 1.4 is unremarkable and only something
+approaching 10 indicates genuine task-set-relativity. The default threshold sits at 3.0, well
+above the classical reference and well below the relative one; earlier it was set at 1.5, which
+is inside the classical fixture's own range and produced false alarms.
+
+A SHAPE THAT NEITHER MODEL PRODUCES
+-----------------------------------
+Both synthetic worlds give rho RISING MONOTONICALLY with split size -- more tasks per half,
+better agreement, as any sampling-error account predicts. If the real curve instead peaks at an
+intermediate size and falls, that is not explained by either the classical model or the
+task-set-relative one, and it is flagged separately. `rho_peak_size` and `rho_is_monotone`
+carry it.
 
 Either way the practical conclusion for P4 is the same: report the UNCORRECTED split-half
 agreement at a stated half-length, and do not quote a disattenuated correlation.
@@ -117,23 +131,37 @@ def implied_r1(r_L: float, L: int) -> float:
 
 
 def calibration_matrix(C: np.ndarray, seed: int) -> np.ndarray:
-    """A synthetic matrix matched to C's shape and per-feature activity, with a TRUE score.
+    """A synthetic matrix matched to C's breadth distribution, with a TRUE score by construction.
 
-    Feature f is active on each task independently with the same probability it shows in C, at
-    the same overall magnitude. A fixed per-feature breadth therefore exists by construction and
-    the classical model holds exactly -- so whatever drift the sweep reports on THIS matrix is
-    the ceiling artefact alone, and is the reference the real drift must be read against.
+    Feature f is given a fixed concentration parameter alpha_f and its per-task shares are drawn
+    independently from a symmetric Dirichlet(alpha_f). The participation ratio measured on any
+    task subset is then a noisy estimate of the SAME fixed quantity, which is exactly the
+    one-parameter structure Spearman-Brown assumes. Whatever drift the sweep reports on this
+    matrix is therefore the ceiling artefact alone.
 
-    Breadth is encoded as HOW MANY TASKS a feature touches, not how large it is: the
-    participation ratio is scale-invariant, so a per-feature multiplier is invisible to it.
+    alpha is matched to each real feature's observed PR. For a symmetric Dirichlet over G
+    components, E[sum p^2] = (alpha+1)/(G*alpha+1), so E[PR] = (G*alpha+1)/(alpha+1) and
+    inverting gives alpha = (PR-1)/(G-PR). PR = 1 (all mass on one task) sends alpha to 0;
+    PR = G (perfectly even) sends it to infinity.
+
+    WHY NOT AN ACTIVITY RATE. An earlier version encoded breadth as the fraction of tasks a
+    feature touches. On this data every one of the 2048 features carries mass in every task, so
+    that rate is 1.0 for all of them, the calibration had no true-score variation at all, and it
+    returned rho = -0.002 -- a null matrix masquerading as a reference. Breadth here lives in
+    how UNEVENLY mass is spread, not in how often it appears.
     """
     C = np.asarray(C, dtype=np.float64)
     G, F = C.shape
     rng = np.random.default_rng(seed)
-    p_f = np.clip((C > 0).mean(axis=0), 1.0 / G, 1.0)
-    scale = C.sum(axis=0) / np.maximum(p_f * G, 1e-12)
-    fire = rng.random((G, F)) < p_f
-    return fire * scale * np.exp(0.3 * rng.standard_normal((G, F)))
+    tot = C.sum(axis=0)
+    sq = (C ** 2).sum(axis=0)
+    PR = np.where(sq > 0, tot ** 2 / np.maximum(sq, 1e-300), 1.0)
+    PR = np.clip(PR, 1.0 + 1e-6, G - 1e-6)
+    alpha = np.clip((PR - 1.0) / (G - PR), 1e-3, 1e4)
+    out = np.empty((G, F), dtype=np.float64)
+    for f in range(F):
+        out[:, f] = rng.dirichlet(np.full(G, alpha[f])) * max(tot[f], 1e-12)
+    return out
 
 
 def sweep_one_size(C, base_rate, active, size: int, n_splits: int, rng,
@@ -221,11 +249,21 @@ def analyse(name: str, z, args) -> dict:
                 "excess_drift": d_real - d_cal,
                 "rho_sd": sd_real, "rho_sd_calibration": sd_cal, "rho_sd_ratio": ratio})
 
-    if not np.isfinite(d_real) or not np.isfinite(ratio):
+    # shape of the rho curve: any sampling-error account predicts monotone improvement with
+    # split size, so a peak at an intermediate size is unexplained by either reference model
+    rr = [e["rho_median"] for e in out["curves"]["raw"] if e.get("n_splits_ok")]
+    out["rho_curve"] = [float(v) for v in rr]
+    out["rho_peak_size"] = int(sizes[int(np.argmax(rr))]) if rr else -1
+    out["rho_is_monotone"] = bool(all(b >= a - 1e-9 for a, b in zip(rr, rr[1:]))) if rr else False
+
+    if not np.isfinite(ratio):
         out["verdict"] = "insufficient sizes"
     elif ratio > args.sd_ratio_tol:
         out["verdict"] = ("TASK-SET-RELATIVE -- rho varies across splits far more than a fixed "
-                          "true score allows; disattenuation is invalid, not merely imprecise")
+                          "true score allows; disattenuation invalid, not merely imprecise")
+    elif not out["rho_is_monotone"]:
+        out["verdict"] = ("sd ratio near the classical reference, BUT rho is NON-MONOTONE in "
+                          "split size, which neither reference model produces -- unexplained")
     else:
         out["verdict"] = ("consistent with a fixed true score measured noisily; drift is the "
                           "ceiling artefact, so report UNCORRECTED split-half agreement")
@@ -256,7 +294,10 @@ def report(r: dict) -> None:
         print(f"  rho spread across splits, real   : {r['rho_sd']:.4f}")
         print(f"  rho spread across splits, calib  : {r['rho_sd_calibration']:.4f}")
         print(f"  RATIO                            : {r['rho_sd_ratio']:.2f}"
-              f"   (~1 = fixed true score; >>1 = task-set-relative)")
+              f"   (references: classical ~1.4, task-set-relative ~13.8)")
+        print(f"  rho curve over sizes             : "
+              f"{[round(v,3) for v in r['rho_curve']]}  peak at size {r['rho_peak_size']}"
+              f"  {'monotone' if r['rho_is_monotone'] else 'NON-MONOTONE (unexplained)'}")
     print(f"  VERDICT: {r['verdict']}")
 
 
@@ -268,7 +309,7 @@ def main() -> None:
     ap.add_argument("--n-splits", type=int, default=300)
     ap.add_argument("--tol", type=float, default=0.05,
                     help="excess drift beyond the calibration reference that counts as material")
-    ap.add_argument("--sd-ratio-tol", type=float, default=1.5,
+    ap.add_argument("--sd-ratio-tol", type=float, default=3.0,
                     help="rho spread relative to calibration above which breadth counts as "
                          "task-set-relative rather than noisily measured")
     ap.add_argument("--seed", type=int, default=0)

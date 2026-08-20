@@ -34,7 +34,7 @@ from split_half_breadth import spearman_brown  # noqa: E402
 
 
 def _args(**kw):
-    d = dict(n_splits=150, tol=0.05, sd_ratio_tol=1.5, seed=0)
+    d = dict(n_splits=150, tol=0.05, sd_ratio_tol=3.0, seed=0)
     d.update(kw)
     return argparse.Namespace(**d)
 
@@ -46,6 +46,37 @@ class _Z(dict):
 def _wrap(C):
     return _Z(C=C, base_rate=np.random.default_rng(0).random(C.shape[1]),
               is_active=np.ones(C.shape[1], bool))
+
+
+def _dense_classical(G=10, F=1500, seed=0):
+    """The geometry that matches the real data: EVERY feature carries mass in EVERY task, and
+    breadth lives in how unevenly that mass is spread.
+
+    Each feature gets a fixed Dirichlet concentration; per-task shares are independent draws
+    around it. A fixed true score exists, so this is the classical reference. The sparse
+    fire-based fixture below does not match the real data, where all 2048 features are active in
+    all tasks -- an activity-rate encoding is degenerate there.
+    """
+    rng = np.random.default_rng(seed)
+    alpha = np.exp(rng.uniform(-2, 3, F))
+    shares = np.stack([rng.dirichlet(np.full(G, a)) for a in alpha], axis=1)
+    return shares * np.exp(rng.standard_normal(F))
+
+
+def _dense_task_set_relative(G=10, F=1500, seed=1):
+    """Dense, but breadth in the first half of tasks is uncorrelated with breadth in the second.
+
+    No feature-intrinsic breadth exists: which features look broad depends on which regime you
+    sampled, and averaging more tasks converges on a blend rather than on any true value.
+    """
+    rng = np.random.default_rng(seed)
+    aa, ab = np.exp(rng.uniform(-2, 3, F)), np.exp(rng.uniform(-2, 3, F))
+    scale = np.exp(rng.standard_normal(F))
+    C = np.zeros((G, F))
+    for f in range(F):
+        C[:G // 2, f] = rng.dirichlet(np.full(G // 2, aa[f])) * scale[f]
+        C[G // 2:, f] = rng.dirichlet(np.full(G // 2, ab[f])) * scale[f]
+    return C
 
 
 def _classical(G=10, F=1200, seed=0):
@@ -128,28 +159,58 @@ def test_drift_alone_cannot_answer_the_true_score_question():
 
 
 def test_rho_spread_ratio_separates_a_fixed_true_score_from_a_task_set_relative_one():
-    """The axis that works. A fixed property measured noisily makes every random split equally
-    informative, so rho varies across splits about as much as the calibration's does. A
-    task-set-relative property makes regime-matched splits agree far better than regime-crossed
-    ones, inflating the spread."""
-    a = analyse("classical", _wrap(_classical()), _args())
-    b = analyse("relative", _wrap(_task_set_relative()), _args())
-    assert a["rho_sd_ratio"] < 1.5, a["rho_sd_ratio"]
-    assert b["rho_sd_ratio"] > 2.0, b["rho_sd_ratio"]
-    assert a["verdict"].startswith("consistent with a fixed true score"), a["verdict"]
+    """The axis that works, on the DENSE geometry that matches the real data.
+
+    The two references are an order of magnitude apart (~1.4 vs ~13.8), which is why the
+    threshold sits at 3.0. An earlier threshold of 1.5 fell inside the classical fixture's own
+    range and flagged it as task-set-relative."""
+    a = analyse("dense classical", _wrap(_dense_classical()), _args())
+    b = analyse("dense relative", _wrap(_dense_task_set_relative()), _args())
+    assert a["rho_sd_ratio"] < 3.0, a["rho_sd_ratio"]
+    assert b["rho_sd_ratio"] > 5.0, b["rho_sd_ratio"]
+    assert b["rho_sd_ratio"] > 3 * a["rho_sd_ratio"], (a["rho_sd_ratio"], b["rho_sd_ratio"])
     assert b["verdict"].startswith("TASK-SET-RELATIVE"), b["verdict"]
 
 
-def test_calibration_matrix_preserves_activity_and_encodes_breadth_as_task_count():
-    """The calibration must match the real matrix on the axis PR can actually see. PR is
-    scale-invariant, so a per-feature multiplier is invisible to it and the true score has to
-    live in how many tasks a feature touches."""
-    C = _classical()
+def test_both_reference_models_give_a_MONOTONE_rho_curve():
+    """Why non-monotonicity is flagged separately. Any sampling-error account predicts that
+    bigger halves agree better, and both references do exactly that -- so a real curve that
+    peaks at an intermediate size is explained by neither."""
+    for C in (_dense_classical(), _dense_task_set_relative()):
+        res = analyse("ref", _wrap(C), _args())
+        assert res["rho_is_monotone"], res["rho_curve"]
+        assert res["rho_peak_size"] == max(2, len(res["rho_curve"]) + 1), res["rho_curve"]
+
+
+def test_calibration_is_not_degenerate_on_a_DENSE_matrix():
+    """The bug that voided a real run. The old calibration encoded breadth as the fraction of
+    tasks a feature touches; on this data every feature touches every task, so that rate was 1.0
+    for all of them and the reference matrix had no true-score variation -- it returned
+    rho = -0.002, a null masquerading as a calibration."""
+    C = _dense_classical()
+    res = analyse("dense", _wrap(C), _args())
+    for e in res["curves"]["calibration"]:
+        if e.get("n_splits_ok"):
+            assert e["rho_median"] > 0.15, e
+
+
+def test_calibration_matrix_matches_the_BREADTH_distribution_not_the_activity_rate():
+    """The calibration must match the real matrix on the axis PR can actually see.
+
+    On this data every feature carries mass in every task, so activity rate is 1.0 for all of
+    them and carries no information -- matching it produced a reference with zero true-score
+    variation. What PR responds to is how UNEVENLY mass is spread, so the calibration matches
+    the participation-ratio distribution instead, via a per-feature Dirichlet concentration.
+    """
+    from mrvla.attribution import participation_ratio
+    C = _dense_classical()
     Ccal = calibration_matrix(C, 0)
     assert Ccal.shape == C.shape
-    real_p, cal_p = (C > 0).mean(axis=0), (Ccal > 0).mean(axis=0)
-    assert np.corrcoef(real_p, cal_p)[0, 1] > 0.8, np.corrcoef(real_p, cal_p)[0, 1]
-    assert abs(real_p.mean() - cal_p.mean()) < 0.05
+    pr, prc = participation_ratio(C), participation_ratio(Ccal)
+    assert abs(np.median(pr) - np.median(prc)) < 0.6, (np.median(pr), np.median(prc))
+    assert np.corrcoef(pr, prc)[0, 1] > 0.6, np.corrcoef(pr, prc)[0, 1]
+    # and it must stay DENSE, like the data it is standing in for
+    assert (Ccal > 0).all(axis=0).mean() > 0.95
 
 
 def test_shuffle_floor_sits_at_zero_at_every_size():
