@@ -861,6 +861,24 @@ say different things about the same channel without either being wrong.
 > functions of the emitted token, so a high `recon` slope for the gripper is expected by
 > construction.
 >
+> *A projection of zero cannot distinguish "nothing there" from "plenty there, pointing
+> sideways".* The statistic accumulates `sum(true*feat)` and `sum(true^2)` but never
+> `sum(feat^2)`, and that missing term is the one that separates the two. Simulated: features
+> that are genuinely inert and features that are loud but misaligned both return a slope of
+> ~0.00 while their energies differ by a factor of ~20000. There are also two flavours of
+> cancellation the number cannot tell apart — WITHIN a decision (`sum_j phi_j` ~ 0 because
+> features oppose each other) and ACROSS decisions (`sum_j phi_j` is large but its sign relative
+> to the margin flips). P5c establishes that individual |phi_j| are substantial at gripper
+> decisions (1.08x even mass), so at least some within-decision cancellation is occurring, but
+> the per-decision NET is not recorded anywhere.
+>
+> **Therefore state the claim as "the features' net contribution does not align with the emitted
+> margin", and not as "features do not drive the gripper".** The stronger reading is not
+> supported. Adding a `sum(feat^2)` accumulator per slot would settle it in two lines, in the
+> same GPU pass the per-channel transition mask already requires: near zero earns the strong
+> claim, large means the features are doing something orthogonal to the margin and "the gripper
+> is a default" is the wrong description of it.
+>
 > *No transition-conditioned control exists for this table.* `suff` is indexed by slot only
 > (`run_channel_attribution.py:225`), so the figures cover ALL decisions including the ~95% where
 > the gripper is not moving. The `_trans` variants exist for the flip counters, not for
