@@ -12,18 +12,33 @@ module: a feature's 256-bin causal signature is semantically ambiguous until con
 slot, and "which channel does this feature drive" is answered by where its |phi| mass sits
 across the seven positions.
 
-THE NORMALISATION TRAP. Raw |phi| is NOT comparable across slots. phi carries
+A POSSIBLE SCALE CONFOUND -- HYPOTHESISED, THEN TESTED, AND NOT FOUND. phi carries
 u_contrast = u_t - mean_s u_s, whose norm depends on where the emitted bin sits in the ordered
-range. The gripper is near-binary and emits extreme bins, which have the largest ||u_contrast||,
-so EVERY feature looks stronger at the gripper slot for a purely geometric reason. `share`
-statistics -- a feature's fraction of the total |phi| at that decision and slot -- are
-comparable; absolute ones are not. Both are computed, because a result that appears only in the
-absolute numbers is the confound rather than the finding.
+range. Since the 256 bins are laid out in order, the mean bin sits near the middle, so a slot
+emitting EXTREME bins would carry a larger ||u_contrast|| than one emitting central bins. The
+gripper is near-binary and emits extreme bins; the six delta channels emit small nudges near the
+centre. Raw |phi| would then not be comparable across slots.
 
-THE DEGENERACY TRAP. The gripper token is constant for most of an episode, so a feature can
-score high gripper share simply by dominating a low-entropy slot. `transition_mask` isolates the
-decisions where that channel's command actually changes, and every statistic should be reported
-on all decisions AND on transitions only.
+That is an argument, not a measurement, and on this data it does not hold. The share of total
+absolute causal mass by slot runs 0.1331 to 0.1537 against an even split of 0.1429 -- the
+gripper at 1.08x even, every slot within 8% of its fair share (results.md P5c). Either the
+effect is far smaller than the geometry suggests, or it is offset elsewhere in phi: the residual
+norm r and the count of active features both sit in the denominator and could differ by slot.
+
+The module still computes BOTH forms, and that remains the right design: `share` statistics -- a
+feature's fraction of the total |phi| at that decision and slot -- are scale-free whether or not
+a scale difference exists, so a result appearing only in the absolute numbers is the confound
+rather than the finding. What has changed is the status of the claim. The normalisation is
+insurance, not a rescue, and no conclusion here should be described as depending on it.
+
+CONSTANT CHANNELS NEED CONDITIONING -- this one does hold. The gripper token is unchanged on
+roughly 95% of timesteps, so a feature can score high gripper share simply by dominating a slot
+where nothing is being decided, and a LOW flip rate there measures "this channel is easy" rather
+than "features do not drive it". `transition_mask` isolates the decisions where that channel's
+command actually changes. Every statistic should be reported on all decisions AND on transitions
+only; a necessity figure quoted without the transition restriction is measuring channel entropy.
+This applies to any low-entropy channel, not to the gripper specifically -- it is simply the only
+one in this action space that qualifies.
 """
 
 from __future__ import annotations
@@ -75,8 +90,13 @@ def decision_shares(phi_abs: np.ndarray, eps: float = 1e-30) -> np.ndarray:
     """Row-normalise |phi| so each decision contributes 1 unit of causal mass.
 
     This is the cross-slot-comparable form: it asks "what fraction of THIS decision did feature
-    j carry", removing the per-slot ||u_contrast|| scale that otherwise makes the gripper slot
-    look important for every feature at once.
+    j carry", which is scale-free whether or not the slots differ in scale.
+
+    It was introduced against a hypothesised per-slot ||u_contrast|| difference; that difference
+    was subsequently measured and is not present on this data (see the module docstring and
+    results.md P5c -- every slot lands within 8% of an even share of total causal mass). Keep the
+    normalisation as insurance, since it costs nothing and the comparison it enables is the right
+    one regardless, but do not describe any result as depending on it.
     """
     v = np.asarray(phi_abs, dtype=np.float64)
     return v / np.maximum(v.sum(axis=1, keepdims=True), eps)
