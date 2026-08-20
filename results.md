@@ -695,19 +695,39 @@ so channel identity is positional. `run_attribution.py` discards that axis. Reco
 **0.9919**) gives a second breadth axis and tests a sharp hypothesis: *are general features
 gripper/phase detectors?*
 
-**They are not.** corr(adjusted breadth, gripper concentration), rank-residualised on magnitude
-and base rate, is **+0.069**. The same partial for all seven channels:
+**They are not.** corr(adjusted breadth, channel concentration), rank-residualised on
+magnitude and base rate, reported in BOTH forms — absolute is primary, share is the robustness
+check (`channels_raw.py`; see P5c for why that ordering, and P5d for what the share form does to
+the gripper):
 
-| dx | dy | dz | droll | dpitch | dyaw | gripper |
-|---|---|---|---|---|---|---|
-| +0.081 | +0.083 | **+0.195** | +0.089 | +0.099 | +0.162 | +0.069 |
+| | dx | dy | dz | droll | dpitch | dyaw | gripper |
+|---|---|---|---|---|---|---|---|
+| **absolute** | +0.083 | +0.084 | **+0.188** | +0.088 | +0.096 | +0.162 | +0.082 |
+| share | +0.081 | +0.083 | +0.195 | +0.089 | +0.099 | +0.162 | +0.069 |
+| delta | −0.001 | −0.001 | +0.007 | +0.000 | +0.002 | +0.001 | **−0.013** |
 
-All small, all positive, gripper *lowest* of the group. General-vs-specialist channel profiles
-differ by ≤0.07 with P(general > specialist) of 0.51–0.62. There is no channel story.
+**0/7 sign disagreements, largest delta 0.013.** The two forms agree, so no conclusion here
+depends on the normalisation.
+
+Read the absolute row: **five channels sit flat at 0.082–0.096 — dx, dy, droll, dpitch and the
+gripper — and two stand out at roughly double, dyaw (0.162) and dz (0.188).** General-vs-specialist
+channel profiles differ by ≤0.07 with P(general > specialist) of 0.51–0.62.
+
+**Breadth is unrelated to five of the seven action dimensions, the gripper among them, and
+relates only mildly to vertical translation and wrist yaw.** The gripper hypothesis is dead: the
+gripper is indistinguishable from dx. That dz and dyaw are the two mildly elevated channels is a
+substantive aside rather than a null — lift and twist are what grasping and releasing physically
+involve.
+
+> **Do not claim the gripper is the LOWEST of the seven.** In the absolute form it beats dx by
+> 0.0002, which is noise. That claim held only in the share form (0.069 vs 0.081), where the gap
+> was produced by a normalisation that P5c shows corrects nothing here.
 
 > All seven partials coming out positive is itself odd, since the seven concentrations sum to 1
 > per feature and should partly cancel. That pattern is more consistent with a shared artefact
-> than with seven channel-specific effects, and wants a shuffled-breadth control.
+> than with seven channel-specific effects, and wants a shuffled-breadth control. It is **not** a
+> normalisation artefact — the absolute row is all-positive too — so it lives in the underlying
+> quantity. Still unrun.
 
 ### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
 
@@ -738,6 +758,45 @@ practical consequence is reassuring rather than alarming: absolute and share ana
 broadly agree, and `analyze_channels.py` already flags any sign disagreement between them
 ("CONTRADICT -- believe share"). If that flag never tripped on the channel run, trap 1 was a
 non-issue throughout and the correction is harmless rather than load-bearing.
+
+---
+
+### P5d. The transition control is gripper-defined, and the share correction is inert
+
+Two objections to how the channel analysis treats the gripper. One is a real defect.
+
+**The transition control is built from the gripper's tokens and broadcast to every channel.**
+`run_channel_attribution.py:236-238`:
+
+```
+grip      = tok_rows.reshape(n, n_sl)[:, args.gripper_slot]
+trans_dec = transition_mask(grip, ep_of, ts_of)
+trans     = np.repeat(trans_dec, n_sl)          # broadcast to ALL seven slots
+```
+
+So `flip_trans` for dx means *"dx flipped at a timestep where the GRIPPER changed"*, which
+controls for nothing — dx changes on ~95% of steps regardless. **The `_trans` family is not
+comparable across channels**, and any table mixing gripper `_trans` with dx `_trans` compares two
+different conditionings. The fix is a per-channel mask built from each channel's own emitted
+bins, which needs a rerun of the GPU pass. Until then, do not report `_trans` comparisons across
+channels — and note that "swap in `flip_active_trans`" would fix the gripper figure while
+breaking its six comparators.
+
+**The share normalisation is applied uniformly, and on this data it corrects nothing.** Measured
+per channel: 0/7 sign disagreements, largest absolute-vs-share delta 0.013. Simulated at the
+decision level against a planted ground-truth channel profile
+(`tests/test_channels_raw.py`), the trade-off is:
+
+| | absolute vs truth | share vs truth |
+|---|---|---|
+| one slot inflated 10x | 0.52 | **0.07** |
+| no scale difference | **0.011** | 0.066 |
+
+The normalisation divides each slot by ITS OWN typical decision total, which is a distortion
+whether or not a `||u_contrast||` difference exists. Where the confound is real that is a large
+win; where it is not, it leaves the answer roughly six times further from the truth than the raw
+numbers. P5c reports no confound here, so **absolute is the more accurate form on this data and
+is reported as primary**, with share as the robustness check.
 
 ---
 
