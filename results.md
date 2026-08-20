@@ -606,6 +606,74 @@ targets by **split-half-stable** breadth is the cheap fix before spending 79 ep/
 
 ---
 
+### P4a. Breadth is task-set-relative, not feature-intrinsic (and Spearman-Brown does not apply)
+
+`split_half_sweep.py`. P4 corrects a single split-half correlation to full length with
+Spearman-Brown. Two things had to be checked before that number could be used: whether the
+correction applies to a participation ratio at all, and whether there is a fixed "true breadth"
+for it to correct toward. Neither holds.
+
+**Spearman-Brown does not apply.** Its one-parameter model implies the same per-task reliability
+backed out of every split size. On a synthetic matrix with a fixed true breadth per feature and
+independent per-task draws — exactly the model it assumes — the implied value still climbs,
+because PR's CEILING moves with the split size (at half-size 2 the statistic lives in [1,2] with
+massive ties; at 5 it has real resolution). The measurement changes qualitatively, not merely in
+length. **P4 must therefore report UNCORRECTED split-half agreement at a stated half-length.**
+
+**And there is no fixed true score to correct toward.** A calibration matrix is built to
+reproduce each suite's observed PR distribution under a classical model — per-feature Dirichlet
+concentration matched by `alpha = (PR-1)/(G-PR)`, independent per-task shares — so a true score
+exists in it by construction. Four signals separate the real data from it, in the same direction
+in all four suites:
+
+| | goal | spatial | object | libero-10 |
+|---|---|---|---|---|
+| real rho, half-size 5 (raw) | 0.126 | 0.209 | 0.467 | 0.269 |
+| **calibration** rho, half-size 5 | **0.811** | **0.822** | **0.853** | **0.854** |
+| rho spread ratio (real / calibration) | **5.43** | **9.79** | **5.52** | **8.85** |
+| excess drift in implied reliability | −0.135 | −0.186 | −0.161 | −0.126 |
+| rho curve shape | non-monotone | non-monotone | non-monotone | non-monotone |
+
+Reference points for the spread ratio, measured on dense synthetic matrices: **~1.4** for a fixed
+true score measured noisily, **~13.8** for two regimes with uncorrelated breadth. The observed
+5.4–9.8 sits firmly at the task-set-relative end.
+
+The curve shape is the sharpest signal. Both reference models give rho RISING monotonically with
+split size — more tasks per half, better agreement, as any sampling-error account requires. Every
+real suite instead peaks at half-size 3 or 4 and falls at 5. The shuffle floor is flat at ~0.000
+throughout, so the signal being measured is real; it simply is not the signal a fixed-true-score
+model produces.
+
+**Reading.** Causal breadth is a property of a feature *relative to a task distribution*, not an
+intrinsic property of the feature. Split-half disagreement is real variation rather than
+measurement error.
+
+*One alternative reading, which cannot be separated here.* The calibration assumes per-task
+variation is Dirichlet; genuinely heavier-tailed per-task variation would also depress agreement
+without task-set-relativity as such. Both readings lead to the same three consequences, so the
+defensible claim is the narrower one: **the classical model does not fit.**
+
+**Consequences.**
+
+1. *Disattenuation is invalid, not merely imprecise.* Variation that is not error cannot be
+   corrected away. The |r_true| ≥ 0.750 bound in P4 is retired and does not return.
+2. *Wording.* Not "feature j is a general feature" but "feature j has high causal breadth over
+   this suite's task distribution". A4's characterisation of the two ends survives as a
+   description of the selection; the word *general* carries more than the data supports.
+3. *Path A is untouched.* LOTO measures breadth-on-nine-tasks predicting causal IMPORTANCE on a
+   tenth — not breadth agreeing with breadth. Different quantities and different targets. That a
+   task-set-relative quantity nonetheless transfers to an unseen task is arguably a stronger
+   result than if it had been intrinsic.
+
+*Methods note on building the calibration.* Two bugs voided an earlier run of this diagnostic and
+are pinned by tests. Encoding breadth as the fraction of tasks a feature touches is degenerate
+here — all 2048 features carry mass in every task, so the rate is 1.0 for all of them and the
+reference had no true-score variation, returning rho = −0.002. And the spread-ratio threshold was
+initially set at 1.5, inside the classical fixture's own range, which flagged classical data as
+task-set-relative.
+
+---
+
 ## P5. B1 — generality is *not* channel-localised (negative result)
 
 OpenVLA emits 7 action tokens per decision, reusing the same 256 bins at every decode position,
