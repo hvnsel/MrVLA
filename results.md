@@ -725,9 +725,12 @@ involve.
 
 > All seven partials coming out positive is itself odd, since the seven concentrations sum to 1
 > per feature and should partly cancel. That pattern is more consistent with a shared artefact
-> than with seven channel-specific effects, and wants a shuffled-breadth control. It is **not** a
-> normalisation artefact — the absolute row is all-positive too — so it lives in the underlying
-> quantity. Still unrun.
+> than with seven channel-specific effects. It is **not** a normalisation artefact — the absolute
+> row is all-positive too — so it lives in the underlying quantity.
+>
+> A shuffled-breadth control would settle it and has not been run. **It is a footnote, not a
+> to-do**: a shared additive offset of ~+0.08 would leave five channels at ≈0 and two at ≈+0.08,
+> which is the same conclusion in cleaner form. It cannot overturn anything.
 
 ### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
 
@@ -808,21 +811,54 @@ map §3.3 wanted, built from data already collected.
 
 ### P5b. The gripper is a default, not a decision
 
-Per-slot sufficiency (fraction of each channel's action margin the features additively recover):
+The action margin decomposes exactly at frozen r as `true = features + bias + error`, where
+*features* is `l2·Σ z_j w_j` (different every decision) and *bias* is `μ·1 + b_pre` (the same
+constant at every decision). Reporting all four columns rather than two makes the result legible:
 
-| | dx | dy | dz | droll | dpitch | dyaw | gripper |
-|---|---|---|---|---|---|---|---|
-| features + bias | 0.940 | 0.934 | 0.905 | 0.949 | 0.920 | 0.937 | **0.992** |
-| features alone | 0.607 | 0.833 | 0.593 | 0.903 | 0.923 | 0.776 | **−0.046** |
+| channel | features | bias | = recon | error |
+|---|---|---|---|---|
+| dx | 0.607 | 0.333 | 0.940 | 0.060 |
+| dy | 0.833 | 0.101 | 0.934 | 0.066 |
+| dz | 0.593 | 0.312 | 0.905 | 0.095 |
+| droll | 0.903 | 0.046 | 0.949 | 0.051 |
+| dpitch | 0.923 | −0.003 | 0.920 | 0.080 |
+| dyaw | 0.776 | 0.160 | 0.936 | 0.064 |
+| **gripper** | **−0.046** | **1.038** | **0.992** | **0.008** |
 
-The gripper's margin is recovered almost entirely by the μ+b_pre bias; the features contribute
-nothing. This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the
-gripper. Necessity agrees: removing a feature changes the gripper token on 0.0006–0.0010 of
-decisions it fires on, against 0.029–0.057 for dx.
+**The bias column is the finding.** Six channels sit at 0.00–0.33. The gripper is at **1.038** —
+the constant alone *overshoots* the margin and the features pull it back by 4.6%. Its error is
+also the smallest of the seven (0.008), because a constant fits a near-constant target almost
+exactly. `dpitch` is the mirror image at −0.003: its features do all the work.
 
-*Caveat*: on a near-binary channel both the true margin and the bias term are functions of the
-emitted token, so a high `recon` slope is partly tautological. The transition-conditioned figures
-are the control.
+**Mechanically**, this follows from the gripper token being unchanged on ~95% of timesteps. Its
+margin is large and near-constant; a constant explains a constant, and a term that varies every
+decision has nothing left to explain. You cannot explain something that does not change with
+something that does. Compare dx, whose margin swings every step, so the constant captures only
+the mean and the features do the varying work.
+
+This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the gripper.
+
+> **Three caveats, none of which are worth running down.**
+>
+> *The metric is a calibration slope, not R².* `Σ(true·pred)/Σ(true²)` asks whether the
+> reconstruction tracks the margin at the right SCALE on average; it does not penalise scatter,
+> so a noisy but unbiased reconstruction scores 1. This is the same statistic A1 used for the
+> 0.936 gate and it is applied identically to all seven channels, so the comparison is fair — but
+> "0.94" means "tracks at 94% of size", not "explains 94% of variance".
+>
+> *Partly tautological on a near-binary channel.* Both the true margin and the bias term are
+> functions of the emitted token, so a high `recon` slope for the gripper is expected by
+> construction.
+>
+> *No transition-conditioned control exists for this table.* `suff` is indexed by slot only
+> (`run_channel_attribution.py:225`), so the figures cover ALL decisions including the ~95% where
+> the gripper is not moving. The `_trans` variants exist for the flip counters, not for
+> sufficiency. **Whether features explain the gripper AT TRANSITIONS is untested**, and an earlier
+> version of this section wrongly claimed the transition figures were the control for it.
+>
+> The necessity comparison is dropped rather than caveated: it quoted `flip_active`, counted over
+> all gripper decisions, and its `_trans` alternative is conditioned on the gripper's own clock
+> broadcast to every channel (P5d), so neither variant supports a cross-channel table.
 
 ---
 
