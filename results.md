@@ -838,6 +838,17 @@ the mean and the features do the varying work.
 
 This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the gripper.
 
+**This does not contradict P5c**, and the apparent tension is worth stating explicitly because it
+reads like one. The gripper carries an entirely normal share of causal MASS (0.1537, 1.08x even),
+yet contributes nothing to the MARGIN. Those are different objects: causal mass is `sum |phi|`
+with the sign discarded, while the margin term is the SIGNED sum `|sum phi|`. A set of features
+pushing +0.4, −0.3, +0.5, −0.6 carries 1.8 of mass and delivers 0.0 to the answer. At the gripper
+the features are active and carrying magnitude; their signed contributions simply cancel, and the
+constant carries the answer instead.
+
+Path A and Steps 1–4 are built on causal mass. This table is built on the signed margin. They can
+say different things about the same channel without either being wrong.
+
 > **Three caveats, none of which are worth running down.**
 >
 > *The metric is a calibration slope, not R².* `Σ(true·pred)/Σ(true²)` asks whether the
