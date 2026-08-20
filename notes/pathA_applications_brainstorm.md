@@ -300,6 +300,11 @@ available at no cost, and it is a genuinely different signal from μ_t.
 
 **D3. Steering-layer choice (A5 above).** Moderate cost, and the prediction is sharp.
 
+**D4. See `vlm_in_the_loop_brainstorm.md`.** A follow-on brainstorm on whether the axis can
+*inform* a process that improves the policy rather than steering it directly — VLM fragility
+labels joined to phi, an action-space phrasebook, and a free per-decision fragility signal
+(margin / flip-susceptibility) that supersedes the mu_t monitor in D2.
+
 ---
 
 ### E. Contributions that stand alone if the behavioural link never lands
