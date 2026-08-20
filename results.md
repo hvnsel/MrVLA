@@ -344,10 +344,25 @@ on a noisy control under-removes it — also biasing toward a positive partial. 
 reliability estimate on `mag_tr` and `base_rate` which we do not have, and it stays a stated
 caveat rather than a resolved one.
 
-## P2. Concentration and reproducibility of causal influence, quantified
+## P2. Concentration of causal influence, quantified
+
+> **DECIDED: the reproducibility half is retired; concentration ships as one paragraph.**
+> The cross-task overlap column below is recorded for the audit trail and **must not be
+> published** — see P2b. The coalition is the always-on set and `base_rate` is a single global
+> vector, so the recurrence is largely mechanical. The column shuffle is deflated by the same
+> mechanism and no longer adds anything beyond the activity control.
+>
+> What ships: `n_eff`, the top-k shares, per-task stability, and the activity control — the last
+> of which is the only part carrying non-trivial content, namely that causal mass is **not**
+> proportional to firing frequency. Read the 8.7x with the caveat that base rate is bounded in
+> [0,1] while mass is not, so the two distributions have different room to skew; it says these
+> are qualitatively different, not that the ratio is exact. The paragraph must disclose that the
+> most causally massive features largely coincide with the most frequently firing ones, so this
+> establishes the SHAPE of the influence distribution and not the recruitment of task-specific
+> machinery.
 
 §A6 answers "of course hundreds of features influence the action" with *"concentration and
-reproducibility of influence is the claim"*. Both words now have numbers.
+reproducibility of influence is the claim"*. Only the first word survived.
 
 | suite | effective #features (of 2048) | top-10 share | top-50 share | Gini | top-50 cross-task overlap |
 |---|---|---|---|---|---|
@@ -435,6 +450,57 @@ have mattered silently in any suite where they were not.
 
 ---
 
+### P2b. The recurring coalition is the always-on features (negative result)
+
+`coalition_identity.py`. P2's controls establish that causal mass is more *concentrated* than
+firing rate, but every one of them is a statement about the SHAPE of a distribution. None
+constrains the IDENTITY of the top set — mass concentrated on exactly the most frequently
+firing features would produce the identical n_eff, Gini and shuffle numbers. That reading was
+untested. It is now tested, and it is what the data show.
+
+| suite | top-50 by mass ∩ top-50 by base rate | Jaccard | coalition's base-rate percentile |
+|---|---|---|---|
+| goal | **41/50** (chance 1.22) | 0.695 | mean 98.6, **100%** above median |
+| spatial | **40/50** | 0.667 | mean 97.5, **100%** above median |
+| object | **42/50** | 0.724 | mean 97.8, **100%** above median |
+| libero-10 | **43/50** | 0.754 | mean 98.5, **100%** above median |
+
+**The coalition is the always-on set.** Every member of every suite's top-50 by causal mass
+sits in roughly the top 1.5% of firing frequency.
+
+**This breaks the reproducibility claim specifically.** `base_rate` is pooled over all decisions
+in the suite — it is ONE global vector, not a per-task quantity — so "top-50 by base rate" is
+the same set for every task by construction. If each task's mass ranking tracks that global
+firing ranking, high cross-task overlap follows mechanically. The 34x figure in P2 is therefore
+substantially measuring "causal mass tracks a task-independent quantity", not "the same task
+machinery is recruited across tasks". **P2's reproducibility claim cannot be reported as it
+stands.**
+
+The column shuffle does not catch this. It destroys feature identity, which shows concentration
+comes from identity — but it cannot distinguish *the same task-relevant features* from *the same
+always-on features*.
+
+**What survives.** Concentration. `n_eff(mass)` = 102.3 against `n_eff(base rate)` = 886.8 is a
+genuine contrast: mass is 8.7x more skewed than firing, so mean |phi|-when-firing is not
+constant across features. The membership of the top set is firing-determined; the shape of the
+distribution is not.
+
+**Path A is untouched, and this strengthens it.** Overlap between the mass coalition and the
+top-50 by *adjusted* breadth is **0/50 in every suite**, with the coalition sitting *below*
+median adjusted breadth (39.3 / 45.5 / 45.0 / 24.2 mean percentile). Path A residualised
+magnitude and base rate out from the start; this is direct evidence that the control was both
+necessary and effective. P1 and P2 are not two views of one object — they are two different
+objects, and P2's is the less interesting one.
+
+*Methods note on the definition.* The coalition is the top-N by POOLED mass, a pure magnitude
+criterion. Defining it instead as "features in every per-task top-N" would make the breadth
+question circular, since such a feature is forced to carry mass on every task, which is close to
+the definition of a high participation ratio. The strict per-task intersection is reported
+separately as a description of core stability: 30 / 36 / 35 / 32 features present in every
+task's top-50, union 95 / 67 / 74 / 82.
+
+---
+
 ## P3. The coalition ablation is a *bounded* null, not an absent effect
 
 `analyze_ablation.py` reported point estimates with no interval, no paired test and no power
@@ -487,8 +553,52 @@ axis is solid (P1); the feature-level ranking is only weakly reproducible.** Two
    lower bound on |r_true|, which argues against a null rather than for one. Until recurrence
    reliability is measured, "recurrence ≠ generality" at the feature level is a claim about noisy
    measurements. (P7 addresses this at the role level, where it is much less exposed.)
-2. **Path A gets stronger for free.** Attenuation only ever weakens a correlation, so
-   +0.493 implies **|r_true| ≥ 0.819**.
+2. **Path A gets stronger for free.** Attenuation only ever weakens a correlation, so a
+   measured value obtained with a noisy instrument implies a larger true one:
+   `r_true = r_obs / sqrt(r_xx * r_yy)`, and substituting the most favourable `r_yy = 1` gives
+   a lower bound.
+
+   **Use the curvature-corrected correlation, not the original.** With P1b's +0.452 and
+   `r_xx` = 0.363 the bound is **|r_true| ≥ 0.750**. (An earlier version of this line used the
+   pre-correction +0.493 and reported ≥ 0.819; P1b's correction had not been propagated here.)
+
+   **Do not publish 0.750 as a number.** The DIRECTION is a theorem — measurement noise can
+   only ever weaken a correlation, so the latent relationship is stronger than the measured
+   +0.452. The MAGNITUDE rests on three things that do not hold cleanly here.
+
+   *Two biases in `r_xx`, running opposite ways and neither measured.* The base-rate leak
+   inflates measured agreement, so true `r_xx` may be below 0.363 (raising the bound). But
+   Spearman–Brown assumes the halves differ from the full measurement only in LENGTH, and
+   halving 10 tasks to 5 also halves PR's ceiling, compressing the scale; on a toy with this
+   geometry SB underestimated by a factor of 1.32, which would put `r_xx` near 0.479 and the
+   bound near 0.653. Across a plausible range the bound spans **0.58 to 0.90**.
+
+   *The true-score assumption may not hold.* Classical test theory needs a fixed true value
+   with random error around it. Participation ratio is defined RELATIVE TO THE TASK SET. If
+   breadth genuinely differs across task sets — which `split_half_breadth.py`'s own docstring
+   raises as a possible outcome and which was never resolved — then split-half disagreement is
+   real variation rather than error, and disattenuating it is not valid at all.
+
+   *Errors are plausibly correlated.* Attenuation requires the predictor's error and the
+   target's error to be independent. LOTO makes the TASKS disjoint, but both quantities come
+   from the same SAE, the same decoder direction, the same unembedding and the same rollouts,
+   so a poorly-learned feature direction corrupts φ on both sides identically. Correlated
+   errors inflate `r_obs`, and correcting upward from an inflated value compounds rather than
+   removes the error. This is the one whose direction is actively unfavourable.
+
+   *Bookkeeping, for whoever revisits this.* `r_true ≤ 1` implies `r_yy ≥ r_obs²/r_xx` =
+   0.563, which is plausible for a quantity averaged over thousands of within-task decisions,
+   so the arithmetic is at least internally consistent. Do not pair the raw-PR reliability
+   (0.221) with this correlation — the LOTO estimator residualises the controls internally, so
+   the matched reliability is the adjusted one, and the mismatched pairing demands an
+   impossible `r_yy ≥ 1.10`.
+
+   **The check that would settle the first two.** Vary the split size (2-vs-2, 3-vs-3, 4-vs-4,
+   5-vs-5) and Spearman–Brown-correct each back to full length. Flat across sizes ⇒ the
+   parallel-forms model fits and the correction is defensible. Drifting upward with size ⇒ SB
+   is biased here and the trend gives the true full-length value. Low at every size ⇒ breadth
+   is genuinely task-set-relative and the correction must not be applied. CPU, on the existing
+   npz.
 
 A practical corollary: the top-N coalition that was ablated was drawn from a ranking with
 reliability ~0.36, so part of the coalition is noise, which dilutes any real effect. Selecting
