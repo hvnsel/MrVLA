@@ -606,6 +606,87 @@ targets by **split-half-stable** breadth is the cheap fix before spending 79 ep/
 
 ---
 
+### P4a. Breadth is task-set-relative, not feature-intrinsic (and Spearman-Brown does not apply)
+
+`split_half_sweep.py`. P4 corrects a single split-half correlation to full length with
+Spearman-Brown. Two things had to be checked before that number could be used: whether the
+correction applies to a participation ratio at all, and whether there is a fixed "true breadth"
+for it to correct toward. Neither holds.
+
+**Spearman-Brown does not apply.** Its one-parameter model implies the same per-task reliability
+backed out of every split size. On a synthetic matrix with a fixed true breadth per feature and
+independent per-task draws — exactly the model it assumes — the implied value still climbs,
+because PR's CEILING moves with the split size (at half-size 2 the statistic lives in [1,2] with
+massive ties; at 5 it has real resolution). The measurement changes qualitatively, not merely in
+length. **P4 must therefore report UNCORRECTED split-half agreement at a stated half-length.**
+
+**And there is no fixed true score to correct toward.** A calibration matrix is built to
+reproduce each suite's observed PR distribution under a classical model — per-feature Dirichlet
+concentration matched by `alpha = (PR-1)/(G-PR)`, independent per-task shares — so a true score
+exists in it by construction. Four signals separate the real data from it, in the same direction
+in all four suites:
+
+| | goal | spatial | object | libero-10 |
+|---|---|---|---|---|
+| real rho, half-size 5 (raw) | 0.126 | 0.209 | 0.467 | 0.269 |
+| **calibration** rho, half-size 5 | **0.811** | **0.822** | **0.853** | **0.854** |
+| rho spread ratio (real / calibration) | **5.43** | **9.79** | **5.52** | **8.85** |
+| excess drift in implied reliability | −0.135 | −0.186 | −0.161 | −0.126 |
+| rho curve shape | non-monotone | non-monotone | non-monotone | non-monotone |
+
+Reference points for the spread ratio, measured on dense synthetic matrices: **~1.4** for a fixed
+true score measured noisily, **~13.8** for two regimes with uncorrelated breadth. The observed
+5.4–9.8 sits firmly at the task-set-relative end.
+
+The curve shape is the sharpest signal. Both reference models give rho RISING monotonically with
+split size — more tasks per half, better agreement, as any sampling-error account requires. Every
+real suite instead peaks at half-size 3 or 4 and falls at 5. The shuffle floor is flat at ~0.000
+throughout, so the signal being measured is real; it simply is not the signal a fixed-true-score
+model produces.
+
+**Reading — and how much weight it deserves.** Causal breadth is a property of a feature
+*relative to a task distribution*, not an intrinsic property of the feature. Split-half
+disagreement is real variation rather than measurement error.
+
+Note first how much of this is DEFINITIONAL. "General" here means high causal breadth over the
+suite's tasks, and a participation ratio over G tasks is relative to those G tasks by
+construction. The sweep adds one empirical fact beyond that tautology: the ranking does not
+survive swapping which tasks are used, *even within a single suite*. That threatens a claim
+nobody made — that there is an intrinsic general/specialist trait — and not the claim Path A
+actually makes, which is about PREDICTION (breadth on nine tasks predicts causal importance on a
+tenth) and does not require a stable latent trait.
+
+So this is a wording caveat rather than a threat, and it bites in one place: A4's
+characterisation of the two ends describes ONE PARTICULAR SELECTION, and a different ten tasks
+would select somewhat different features. The one consequence that is not merely wording is the
+disattenuation, which is invalid outright.
+
+*One alternative reading, which cannot be separated here.* The calibration assumes per-task
+variation is Dirichlet; genuinely heavier-tailed per-task variation would also depress agreement
+without task-set-relativity as such. Both readings lead to the same three consequences, so the
+defensible claim is the narrower one: **the classical model does not fit.**
+
+**Consequences.**
+
+1. *Disattenuation is invalid, not merely imprecise.* Variation that is not error cannot be
+   corrected away. The |r_true| ≥ 0.750 bound in P4 is retired and does not return.
+2. *Wording.* Not "feature j is a general feature" but "feature j has high causal breadth over
+   this suite's task distribution". A4's characterisation of the two ends survives as a
+   description of the selection; the word *general* carries more than the data supports.
+3. *Path A is untouched.* LOTO measures breadth-on-nine-tasks predicting causal IMPORTANCE on a
+   tenth — not breadth agreeing with breadth. Different quantities and different targets. That a
+   task-set-relative quantity nonetheless transfers to an unseen task is arguably a stronger
+   result than if it had been intrinsic.
+
+*Methods note on building the calibration.* Two bugs voided an earlier run of this diagnostic and
+are pinned by tests. Encoding breadth as the fraction of tasks a feature touches is degenerate
+here — all 2048 features carry mass in every task, so the rate is 1.0 for all of them and the
+reference had no true-score variation, returning rho = −0.002. And the spread-ratio threshold was
+initially set at 1.5, inside the classical fixture's own range, which flagged classical data as
+task-set-relative.
+
+---
+
 ## P5. B1 — generality is *not* channel-localised (negative result)
 
 OpenVLA emits 7 action tokens per decision, reusing the same 256 bins at every decode position,
@@ -627,6 +708,38 @@ differ by ≤0.07 with P(general > specialist) of 0.51–0.62. There is no chann
 > All seven partials coming out positive is itself odd, since the seven concentrations sum to 1
 > per feature and should partly cancel. That pattern is more consistent with a shared artefact
 > than with seven channel-specific effects, and wants a shuffled-breadth control.
+
+### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
+
+`mrvla/channels.py` warns that the gripper is near-binary, emits extreme bins, and therefore
+carries the largest `||u_contrast||` — so every feature's |phi| should be inflated at slot 6 for
+a purely geometric reason. That warning has a consequence nobody had checked, and it is upstream
+of everything: `run_attribution.py` pools all seven slots, so if gripper decisions carry
+disproportionate mass then `C[task, feature]` — and with it Path A, and Steps 1 through 4 — is
+substantially a GRIPPER measurement rather than a general one.
+
+Read off the saved `C_slot_abs` (no rerun; the split is also printed by
+`run_channel_attribution.py:350`):
+
+| dx | dy | dz | droll | dpitch | dyaw | gripper |
+|---|---|---|---|---|---|---|
+| 0.1353 | 0.1331 | 0.1377 | 0.1503 | 0.1453 | 0.1446 | **0.1537** |
+| 0.95x | 0.93x | 0.96x | 1.05x | 1.02x | 1.01x | **1.08x** |
+
+An even split is 1/7 = 0.1429. **The observed range is 0.93x to 1.08x, and the gripper is 1.08x.**
+Causal mass is divided almost perfectly evenly across the seven action dimensions, so Path A is
+not gripper-weighted and the confound is closed.
+
+*This also undercuts the premise of the share correction.* If the geometric inflation were
+biting, the gripper's absolute share would sit well above 1/7. It does not. Either the effect is
+far smaller than the docstring assumes, or it is offset elsewhere in phi — fewer active features
+at gripper decisions, or a larger residual norm `r`, both of which sit in the denominator. The
+practical consequence is reassuring rather than alarming: absolute and share analyses should
+broadly agree, and `analyze_channels.py` already flags any sign disagreement between them
+("CONTRADICT -- believe share"). If that flag never tripped on the channel run, trap 1 was a
+non-issue throughout and the correction is harmless rather than load-bearing.
+
+---
 
 ### P5a. Channel breadth is a genuine second axis
 
