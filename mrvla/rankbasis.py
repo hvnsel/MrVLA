@@ -176,18 +176,65 @@ def rank_partial_design(y, x, controls: list[np.ndarray], spec: str = "linear") 
     return float((ex * ey).sum() / den) if den > 0 else float("nan")
 
 
-def _folds(C: np.ndarray, base_rate: np.ndarray):
-    """Yield (PR_tr, mag_tr, held, base_rate) per LOTO fold -- the exact split the headline uses."""
+def _folds_xy(C: np.ndarray, Y: np.ndarray, base_rate: np.ndarray,
+              keep_mask: np.ndarray | None = None, extra: list[np.ndarray] | None = None):
+    """Yield (PR_tr, mag_tr, held, base_rate, extras, gi, m) per leave-one-task-out fold.
+
+    C supplies the PREDICTOR (participation ratio over the training tasks) and the magnitude
+    control; Y supplies the TARGET row for the held-out task. Passing Y is C reproduces `_folds`
+    exactly, which is pinned by a test -- the point of routing both through one generator is
+    that a target swap cannot quietly become a different estimator.
+
+    `keep_mask` is an optional [G, F] boolean of per-(task, feature) admissibility, applied to
+    the HELD-OUT row only. It has to be per fold rather than global: a feature measured
+    adequately on nine tasks and thinly on the tenth belongs in the nine folds where it sits on
+    the predictor side, and should drop out only in the fold where it is the target.
+
+    `extra` is a list of [G, F] arrays whose held-out rows become additional controls, so a
+    denominator can be conditioned on without any new estimator code.
+    """
     C = np.asarray(C, dtype=np.float64)
+    Y = np.asarray(Y, dtype=np.float64)
+    # base_rate may be [F] (the shipped global vector) or [G, F], where row gi is the base rate
+    # computed from fold gi's TRAINING tasks only. The global vector is contaminated by the
+    # held-out task; that is inherited from run_attribution.py and is why the per-fold form is
+    # offered rather than assumed.
     base_rate = np.asarray(base_rate, dtype=np.float64)
+    extra = [np.asarray(e, dtype=np.float64) for e in (extra or [])]
     G = C.shape[0]
     for gi in range(G):
         keep = np.arange(G) != gi
+        br = base_rate[gi] if base_rate.ndim == 2 else base_rate
         PR_tr = participation_ratio(C[keep])
         mag_tr = total_magnitude(C[keep])
-        m = (mag_tr > 0) & np.isfinite(PR_tr)
+        m = (mag_tr > 0) & np.isfinite(PR_tr) & np.isfinite(Y[gi]) & np.isfinite(br)
+        if keep_mask is not None:
+            m &= np.asarray(keep_mask, dtype=bool)[gi]
+        for e in extra:
+            m &= np.isfinite(e[gi])
         if m.sum() > 4:
-            yield PR_tr[m], mag_tr[m], C[gi][m], base_rate[m]
+            yield (PR_tr[m], mag_tr[m], Y[gi][m], br[m],
+                   [e[gi][m] for e in extra], gi, m)
+
+
+def _folds(C: np.ndarray, base_rate: np.ndarray):
+    """Yield (PR_tr, mag_tr, held, base_rate) per LOTO fold -- the exact split the headline uses."""
+    for PR_tr, mag_tr, held, br, _extras, _gi, _m in _folds_xy(C, C, base_rate):
+        yield PR_tr, mag_tr, held, br
+
+
+def loto_partial_target(C, Y, base_rate, spec: str = "linear",
+                        keep_mask=None, extra=None) -> np.ndarray:
+    """`partial | both` per fold with an arbitrary held-out target. Y is C == `loto_partial_design`.
+
+    Controls are [mag_tr, base_rate] plus any `extra` held-out rows, all entering the SAME
+    `rank_partial_design` the headline uses -- so the causal target is estimated by the
+    attributional estimator, not by a lookalike.
+    """
+    vals = [rank_partial_design(held, PR_tr, [mag_tr, br] + extras, spec)
+            for PR_tr, mag_tr, held, br, extras, _gi, _m in
+            _folds_xy(C, Y, base_rate, keep_mask, extra)]
+    return np.array([v for v in vals if np.isfinite(v)], dtype=np.float64)
 
 
 def loto_partial_design(C, base_rate, spec: str = "linear") -> np.ndarray:

@@ -1136,6 +1136,61 @@ published numbers. **That should be a deliberate decision before publication, no
   estimate: `q_cross` recomputed on disjoint halves of the probe frames. See the
   diagnostics note.
 
+### C1. Causal breadth — built and pre-registered, not yet run
+
+**The gap.** A3/P1 is the paper's central claim and it is correlational: breadth on 9 tasks
+predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two Phase-2
+results leave it exposed. P3 shows the rollout ablation cannot test it causally at any feasible
+scale (MDE 9.7 points pooled, 18 per task *at the ceiling*, and LIBERO caps at 50 initial
+states). P6a is well-powered and shows general ≈ random on the *pooled* per-firing flip rate —
+but pooled flip rate is average strength, and breadth after residualisation on magnitude is a
+claim about **scope**. The scope version has never been run.
+
+**The experiment.** Same predictor, same controls, same folds, same curvature-corrected basis
+ladder; the target becomes the readout counterfactual flip rate on the held-out task. That is a
+causal quantity carrying ~446k decisions of power rather than 200 episodes. Implemented in
+`causal_breadth.py`; the GPU pass it needs is `sbatch run_channels.slurm <suite> all`.
+
+Three design decisions, each with a test pinning it:
+
+* **All 2048 features, not `pick_candidates`' ~396.** Those are the two extremes of the very
+  predictor under test, and extreme-group sampling inflates |r| by construction
+  (`test_selecting_on_the_predictor_inflates_the_correlation` measures how much). This cannot
+  be approximated by raising `--top`: past the eligible count `select_general_specialist`
+  returns the same set for both ends and the contrast stops being a contrast.
+* **Coded semantics only.** P6 established that projection strips a subspace rather than a
+  feature and that 71.5% of its flips land where the feature wrote nothing.
+* **A third floor.** The target is a **ratio**, and a ratio can manufacture a positive partial
+  out of denominator structure alone: under a null where every feature is equally decisive,
+  small-denominator cells pile up at an exact zero while large ones sit near p̄, so rank(y)
+  tracks the denominator — which tracks base rate, which tracks breadth. Neither the mechanical
+  nor the estimator floor detects this. `binomial_denominator_null` redraws the target as
+  Binomial(N, p̄) keeping every denominator exactly, and is the floor this design turns on.
+
+**Pre-registered reading**, fixed before any number is seen:
+
+| outcome | condition | what it means |
+|---|---|---|
+| **Causal** | partial ≥ +0.15, ≥9/10 folds positive, z > 5 on both the mechanical and the binomial floor, ≥60% retained under the denominator control | breadth is a scope property that transfers *causally*, not only attributionally. Retires P3's underpowered null and answers P6a with the measurement P6a did not make. |
+| **Bounded null** | \|partial\| < 0.05 with all floors at zero | attributed mass transfers; per-decision decisiveness does not. Breadth says where a feature **writes**, not where it **decides** — a real narrowing of A3, and *bounded* in the P3 sense because the resolution is ~±0.03 against 0.097. |
+| **Opportunity, not decisiveness** | positive under [mag, base] but collapsing under the denominator control, or failing the binomial floor | the effect is opportunity — P6a again in a new place — and must be reported as such. |
+
+The positive control is the load-bearing line of the output: the attributed target recomputed
+through the same folds and the same feature set must land on +0.452. If it does not, the join
+is wrong and nothing else in the run is readable.
+
+**Two Step 5 defects are fixed in the same pass, and the fixes are not yet reflected above.**
+P5d's transition control is now built per channel from each slot's own emitted bins instead of
+the gripper's broadcast to all seven, and P5b's sufficiency table now carries
+`energy = Σfeat²/Σtrue²` plus a transition-conditioned copy — the two quantities that decide
+whether the gripper's −0.046 means "inert" or "loud and orthogonal". **Every P5/P5b/P5c/P5d/P6
+number in this document still comes from the old artifact and still stands**; the new run writes
+to `CHANNELS/<suite>_all` precisely so those remain reproducible from their own inputs. Any new
+`_trans` figure is *not* comparable to the tables above — different conditioning — and both the
+npz and `summary.json` carry a `trans_mask` field so the analysis refuses rather than relies on
+a reader noticing.
+
+
 ### Diagnostics ready to run (CPU only, on existing artifacts)
 
 `BASE=... ./run_diagnostics.sh` — see `notes/elevation_diagnostics.md` for what each

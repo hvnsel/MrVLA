@@ -91,6 +91,31 @@ def pick_candidates(attr_path: str, top: int) -> dict:
             "task_PR": {int(j): float(PR[j]) for j in order}}
 
 
+def per_channel_transition(tok_rows: np.ndarray, n: int, n_sl: int,
+                           episode: np.ndarray, timestep: np.ndarray) -> np.ndarray:
+    """[n*n_sl] bool: did THIS slot's own emitted bin change from the previous timestep?
+
+    Fixes results.md P5d. The mask was previously built from the gripper's tokens alone and
+    broadcast to all seven slots with np.repeat, so `flip_trans` for dx meant "dx flipped at a
+    timestep where the GRIPPER moved" -- a control for nothing, since dx changes on ~95% of
+    steps regardless. The whole `_trans` family was therefore not comparable across channels,
+    and any table mixing the gripper's `_trans` with dx's compared two different conditionings.
+
+    Fed ROW indices (tok - id0), not bin indices. `bin_index_from_row` is n_bins - row, strictly
+    monotone, so "changed" is identical either way -- but mrvla/readout.py's row-vs-bin note
+    exists because this axis has been got backwards before, so it is said out loud here.
+
+    A row whose token is out of range is excluded downstream by `valid`, but it still acts as
+    its neighbour's predecessor. That is arguably right ("the bin did change") and the effect is
+    bounded by the invalid fraction, which is ~0.008.
+    """
+    grid = np.asarray(tok_rows).reshape(n, n_sl)
+    out = np.zeros((n, n_sl), dtype=bool)
+    for s_i in range(n_sl):
+        out[:, s_i] = transition_mask(grid[:, s_i], episode, timestep)
+    return out.reshape(-1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -99,12 +124,23 @@ def main() -> None:
     ap.add_argument("--attr", required=True, help="layer_NN_attribution.npz, for candidates")
     ap.add_argument("--layer", type=int, default=31)
     ap.add_argument("--top", type=int, default=100, help="group size for candidate selection")
+    ap.add_argument("--all-features", action="store_true",
+                    help="run the counterfactual on ALL F features instead of the candidate "
+                         "set. Required for any statistic CORRELATED across features: the "
+                         "candidate groups are the two ends of the adjusted-breadth ranking, "
+                         "so selecting on the predictor inflates the correlation. The groups "
+                         "are still computed and recorded, so group contrasts are unaffected. "
+                         "Do NOT approximate this by raising --top: once top exceeds the "
+                         "eligible count, select_general_specialist returns the same set for "
+                         "both ends.")
     ap.add_argument("--coeff", default="both", choices=["projection", "coded", "both"],
                     help="ablation semantics for the counterfactual; see module docstring")
     ap.add_argument("--n-slots", type=int, default=7)
     ap.add_argument("--gripper-slot", type=int, default=6,
-                    help="slot treated as the gripper for the transition control (OpenVLA "
-                         "action order is assumed [dx,dy,dz,droll,dpitch,dyaw,gripper])")
+                    help="LABELLING ONLY. The transition control is now built per channel from "
+                         "each slot's own emitted bins, so it no longer depends on this. Kept "
+                         "so downstream scripts know which slot is the gripper (OpenVLA action "
+                         "order is assumed [dx,dy,dz,droll,dpitch,dyaw,gripper]).")
     ap.add_argument("--max-decisions", type=int, default=0,
                     help="cap on decisions used for the COUNTERFACTUAL layer (0 = all). The "
                          "C_slot accumulation always uses every decision; only the quadratic "
@@ -149,10 +185,19 @@ def main() -> None:
     G1 = U_c @ g_gain                                                  # <1 (*) g, u_c(t)>
     BG = U_c @ (b_pre_np * g_gain)                                     # <b_pre (*) g, u_c(t)>
 
+    # The groups are computed either way: `analyze_channels.py` reads them from summary.json for
+    # its general-vs-specialist contrasts, and they cost nothing. --all-features only widens the
+    # set the counterfactual runs on. With feats = arange(F) the row index IS the feature index,
+    # so analyze_channels' `pos` map becomes the identity and nothing downstream changes.
     cand = pick_candidates(args.attr, args.top)
-    feats = np.array(cand["features"], dtype=np.int64)
-    print(f"[chan] {feats.size} candidate features "
-          + ", ".join(f"{k2}={len(v)}" for k2, v in cand["groups"].items()))
+    if args.all_features:
+        feats = np.arange(F, dtype=np.int64)
+        print(f"[chan] ALL {feats.size} features (groups still recorded: "
+              + ", ".join(f"{k2}={len(v)}" for k2, v in cand["groups"].items()) + ")")
+    else:
+        feats = np.array(cand["features"], dtype=np.int64)
+        print(f"[chan] {feats.size} candidate features "
+              + ", ".join(f"{k2}={len(v)}" for k2, v in cand["groups"].items()))
 
     shards = sorted(glob.glob(os.path.join(args.acts_dir, "shard_*.npz")))
     if not shards:
@@ -174,20 +219,35 @@ def main() -> None:
     # has twice the opportunity to change an action, and in coded mode an inactive feature has
     # coefficient zero and literally cannot flip anything. Rate-given-active is the confound-free
     # form and is what the general-vs-specialist contrast must be read from.
-    flips = {m: {"n": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "flip": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "flip_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "n_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "n_active": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "flip_active": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "n_active_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "flip_active_trans": np.zeros((feats.size, S_SLOTS), dtype=np.int64),
-                 "bin_shift": np.zeros((feats.size, S_SLOTS))} for m in modes}
+    # Accumulated per (feature, TASK, slot). The task axis is what makes a leave-one-task-out
+    # causal analysis possible at all: without it the only available necessity statistic is
+    # pooled over tasks, which measures average decisiveness rather than SCOPE -- and scope is
+    # what breadth claims. The [feature, slot] arrays the rest of the project reads are derived
+    # by summing this over tasks at write time, so nothing downstream changes.
+    FLIP_KEYS = ("n", "flip", "flip_trans", "n_trans", "n_active", "flip_active",
+                 "n_active_trans", "flip_active_trans")
+    flips = {m: {**{k2: np.zeros((feats.size, G, S_SLOTS), dtype=np.int64) for k2 in FLIP_KEYS},
+                 "bin_shift": np.zeros((feats.size, G, S_SLOTS))} for m in modes}
     agree_n = agree_ok = 0
     n_cf_used = 0
-    # sufficiency, accumulated per slot as through-origin slope sums (see the report below)
-    suff = {k: np.zeros(S_SLOTS) for k in ("tt", "t_recon", "t_feat")}
+    # Sufficiency, accumulated per slot as through-origin slope sums (see the report below).
+    #
+    # `ff` = sum(features^2) is what makes the slope interpretable. The slope sum(true*feat) /
+    # sum(true^2) is a PROJECTION, and a projection of zero is equally consistent with "the
+    # features contribute nothing" and "the features contribute plenty, orthogonally to the
+    # margin". Simulated, those two return the same slope while their energies differ by four
+    # orders of magnitude. energy = ff/tt separates them and nothing else here can.
+    #
+    # The `_trans` copies restrict to decisions where THIS channel's command actually changes.
+    # Without them a low-entropy channel (the gripper is unchanged on ~95% of timesteps) is
+    # scored almost entirely on decisions that were already settled, where a constant term fits
+    # a constant target and a varying one cannot. Simulation shows features explaining EVERY
+    # transition perfectly would still report a pooled slope near zero.
+    suff = {k: np.zeros(S_SLOTS) for k in ("tt", "t_recon", "t_feat", "ff",
+                                           "tt_trans", "t_recon_trans", "t_feat_trans",
+                                           "ff_trans")}
     suff_n = np.zeros(S_SLOTS, dtype=np.int64)
+    suff_n_trans = np.zeros(S_SLOTS, dtype=np.int64)
 
     for sp in shards:
         dd = np.load(sp)
@@ -214,6 +274,16 @@ def main() -> None:
         phi_abs = np.abs((l2 / r_scal)[:, None] * z * align)
         phi_abs[~valid] = 0.0
 
+        # --- PER-CHANNEL transition mask. Each slot is clocked by ITS OWN emitted bins.
+        #
+        # This was previously built from the gripper's tokens alone and broadcast to all seven
+        # slots with np.repeat, which made `flip_trans` for dx mean "dx flipped at a timestep
+        # where the GRIPPER moved" -- a control for nothing, since dx changes on ~95% of steps
+        # regardless. The `_trans` family was consequently not comparable across channels, and
+        # any table mixing the gripper's _trans with dx's _trans compared two different
+        # conditionings. --gripper-slot now only labels output.
+        trans = per_channel_transition(tok_rows, n, n_sl, ep_of, ts_of)
+
         # --- per-slot sufficiency: what share of THIS channel's action margin do the
         # features additively recover? The margin decomposes exactly at frozen r as
         # true = features + (mu + b_pre) bias + error, and every term is already in hand.
@@ -228,17 +298,24 @@ def main() -> None:
                 suff["tt"][s_i] += float((true_c[m] * true_c[m]).sum())
                 suff["t_recon"][s_i] += float((true_c[m] * recon_c[m]).sum())
                 suff["t_feat"][s_i] += float((true_c[m] * phi_sum[m]).sum())
+                suff["ff"][s_i] += float((phi_sum[m] * phi_sum[m]).sum())
                 suff_n[s_i] += int(m.sum())
+            mt = m & trans
+            if mt.any():
+                suff["tt_trans"][s_i] += float((true_c[mt] * true_c[mt]).sum())
+                suff["t_recon_trans"][s_i] += float((true_c[mt] * recon_c[mt]).sum())
+                suff["t_feat_trans"][s_i] += float((true_c[mt] * phi_sum[mt]).sum())
+                suff["ff_trans"][s_i] += float((phi_sum[mt] * phi_sum[mt]).sum())
+                suff_n_trans[s_i] += int(mt.sum())
 
         accumulate_slot_task(C_abs, n_cell, phi_abs, slots, rows_task)
         accumulate_slot_task(C_shr, np.zeros_like(n_cell), decision_shares(phi_abs),
                              slots, rows_task)
 
-        grip = tok_rows.reshape(n, n_sl)[:, args.gripper_slot]
-        trans_dec = transition_mask(grip, ep_of, ts_of)
-        trans = np.repeat(trans_dec, n_sl)
-
-        slot_masks = [slots == s for s in range(n_sl)]   # hoisted out of the feature loop
+        # One bucket id per row, so every (task, slot) cell is filled by a single bincount
+        # instead of G x S boolean reductions over the full [n*7] row axis.
+        bucket = rows_task * n_sl + slots
+        n_bucket = G * n_sl
         use = valid.copy()
         if args.max_decisions and n_cf_used >= args.max_decisions:
             use[:] = False
@@ -247,6 +324,14 @@ def main() -> None:
             for mode in modes:
                 coeffs = (projection_coeffs(X, W_dec[feats]) if mode == "projection"
                           else coded_coeffs(z[:, feats], l2))
+                # `n` and `n_trans` do not depend on the feature, so they are counted once for
+                # the whole shard rather than feats.size times.
+                cnt = lambda mask, w=None: np.bincount(
+                    bucket[mask], weights=None if w is None else w[mask],
+                    minlength=n_bucket).reshape(G, n_sl)
+                n_all = cnt(use).astype(np.int64)
+                n_tr = cnt(use & trans).astype(np.int64)
+
                 for fi in range(feats.size):
                     res_f = single_feature_flips(L, S_raw[feats[fi]], coeffs[:, fi],
                                                  base_arg, base_margin)
@@ -254,20 +339,16 @@ def main() -> None:
                     act = z[:, feats[fi]] > 0            # did this feature actually fire here?
                     # report the shift on the ACTION axis, not the row axis: they run opposite
                     shift = signed_bin_shift(res_f["base_argmax"], res_f["new_argmax"], n_act)
-                    for s in range(n_sl):
-                        m = slot_masks[s] & use
-                        flips[mode]["n"][fi, s] += int(m.sum())
-                        flips[mode]["flip"][fi, s] += int((fl & m).sum())
-                        flips[mode]["bin_shift"][fi, s] += float(shift[fl & m].sum())
-                        mt = m & trans
-                        flips[mode]["n_trans"][fi, s] += int(mt.sum())
-                        flips[mode]["flip_trans"][fi, s] += int((fl & mt).sum())
-                        ma = m & act
-                        flips[mode]["n_active"][fi, s] += int(ma.sum())
-                        flips[mode]["flip_active"][fi, s] += int((fl & ma).sum())
-                        mat = ma & trans
-                        flips[mode]["n_active_trans"][fi, s] += int(mat.sum())
-                        flips[mode]["flip_active_trans"][fi, s] += int((fl & mat).sum())
+                    ma = use & act
+                    flips[mode]["n"][fi] += n_all
+                    flips[mode]["n_trans"][fi] += n_tr
+                    flips[mode]["flip"][fi] += cnt(fl).astype(np.int64)
+                    flips[mode]["flip_trans"][fi] += cnt(fl & trans).astype(np.int64)
+                    flips[mode]["n_active"][fi] += cnt(ma).astype(np.int64)
+                    flips[mode]["flip_active"][fi] += cnt(fl & ma).astype(np.int64)
+                    flips[mode]["n_active_trans"][fi] += cnt(ma & trans).astype(np.int64)
+                    flips[mode]["flip_active_trans"][fi] += cnt(fl & ma & trans).astype(np.int64)
+                    flips[mode]["bin_shift"][fi] += cnt(fl, shift.astype(np.float64))
         print(f"[chan]   {os.path.basename(sp)}: decisions={n}  "
               f"argmax agreement so far={agree_ok / max(agree_n, 1):.4f}", flush=True)
 
@@ -281,6 +362,16 @@ def main() -> None:
     with np.errstate(divide="ignore", invalid="ignore"):
         suff_recon = np.where(suff["tt"] > 0, suff["t_recon"] / suff["tt"], np.nan)
         suff_feat = np.where(suff["tt"] > 0, suff["t_feat"] / suff["tt"], np.nan)
+        # energy: how much of the margin's scale the feature term carries, REGARDLESS of
+        # direction. A near-zero slope with a large energy means the features are loud and
+        # orthogonal, not absent -- the slope alone cannot tell those apart.
+        suff_energy = np.where(suff["tt"] > 0, suff["ff"] / suff["tt"], np.nan)
+        suff_recon_tr = np.where(suff["tt_trans"] > 0,
+                                 suff["t_recon_trans"] / suff["tt_trans"], np.nan)
+        suff_feat_tr = np.where(suff["tt_trans"] > 0,
+                                suff["t_feat_trans"] / suff["tt_trans"], np.nan)
+        suff_energy_tr = np.where(suff["tt_trans"] > 0,
+                                  suff["ff_trans"] / suff["tt_trans"], np.nan)
 
     denom = np.maximum(n_cell, 1)[:, :, None]
     C_abs /= denom
@@ -299,7 +390,18 @@ def main() -> None:
                         sufficiency_recon=suff_recon.astype(np.float32),
                         sufficiency_features_only=suff_feat.astype(np.float32),
                         sufficiency_n=suff_n,
-                        **{f"flip_{m}_{key}": v for m in modes
+                        sufficiency_energy=suff_energy.astype(np.float32),
+                        sufficiency_recon_trans=suff_recon_tr.astype(np.float32),
+                        sufficiency_features_only_trans=suff_feat_tr.astype(np.float32),
+                        sufficiency_energy_trans=suff_energy_tr.astype(np.float32),
+                        sufficiency_n_trans=suff_n_trans,
+                        # `flip_{mode}_{key}` stays [F, S], summed over tasks, because
+                        # analyze_channels.py indexes it two-dimensionally and every Step 5
+                        # necessity number is read from it. `_gt` carries the (task, slot)
+                        # resolution the leave-one-task-out causal analysis needs.
+                        **{f"flip_{m}_{key}": v.sum(axis=1) for m in modes
+                           for key, v in flips[m].items()},
+                        **{f"flip_{m}_{key}_gt": v for m in modes
                            for key, v in flips[m].items()})
 
     names = list(DEFAULT_CHANNEL_NAMES)[:S_SLOTS]
@@ -308,8 +410,24 @@ def main() -> None:
                "argmax_agreement": agreement, "decoder_unit_norm_dev": dev,
                "channel_names": names, "groups": cand["groups"],
                "decisions_per_slot_task": n_cell.tolist(),
+               # provenance: a subsampled or narrowed run was previously not self-describing,
+               # so a later reader could not tell how much of the data the counterfactual saw
+               "coeff": args.coeff, "top": args.top, "all_features": bool(args.all_features),
+               "gripper_slot": args.gripper_slot, "n_candidates": int(feats.size),
+               # THE critical provenance field. Before this run the transition mask was the
+               # gripper's, broadcast to all seven slots; a reader tabling new `_trans` numbers
+               # against the old ones would be comparing two different conditionings without
+               # any way to notice. Downstream analyses refuse to run on the wrong value.
+               "trans_mask": "per_channel", "task_ids": [int(t) for t in task_list],
+               "flip_counter_layout": "feature_task_slot",
+               "max_decisions": args.max_decisions, "n_decisions_counterfactual": int(n_cf_used),
                "sufficiency_recon_per_slot": [float(v) for v in suff_recon],
                "sufficiency_features_only_per_slot": [float(v) for v in suff_feat],
+               "sufficiency_energy_per_slot": [float(v) for v in suff_energy],
+               "sufficiency_recon_trans_per_slot": [float(v) for v in suff_recon_tr],
+               "sufficiency_features_only_trans_per_slot": [float(v) for v in suff_feat_tr],
+               "sufficiency_energy_trans_per_slot": [float(v) for v in suff_energy_tr],
+               "sufficiency_n_trans_per_slot": suff_n_trans.tolist(),
                "modes": modes}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -317,27 +435,56 @@ def main() -> None:
     print("\n[chan] per-slot SUFFICIENCY -- fraction of each channel's action margin the")
     print("[chan] features additively recover. Channels differ, so conclusions drawn from them")
     print("[chan] are not equally reliable; a low-sufficiency channel needs discounting.")
+    print("[chan] `slope` is a through-origin calibration, so it can only go to zero two ways:")
+    print("[chan] the features are inert, or they are LOUD AND ORTHOGONAL to the margin.")
+    print("[chan] `energy` = sum(feat^2)/sum(true^2) separates those; the slope alone cannot.")
     for s_i in range(S_SLOTS):
         flag = "" if suff_recon[s_i] >= 0.80 else "   <- below the 0.80 gate bar"
         if suff_feat[s_i] < 0.15:
-            flag += "   <- features contribute ~NOTHING; this channel is the bias term"
+            flag += ("   <- NO ADDITIVE COMPONENT DETECTED (see energy before reading further)")
         print(f"[chan]   {names[s_i]:8s} recon={suff_recon[s_i]:.4f}  "
-              f"features_only={suff_feat[s_i]:.4f}  n={suff_n[s_i]}{flag}")
-    # A CAVEAT ON LOW-ENTROPY CHANNELS. Both the true margin and the bias term are functions of
-    # the EMITTED token, so on a channel that emits only a couple of distinct tokens (the
-    # gripper) a high `recon` slope can be partly tautological: the constant term tracks the
-    # margin by tracking which token was emitted, without explaining why that token won. Read a
-    # high recon with a near-zero features_only as "this channel is a default, not a decision",
-    # and check it against the transition-conditioned numbers, which restrict to the decisions
-    # where the command actually changes.
+              f"features_only={suff_feat[s_i]:.4f}  energy={suff_energy[s_i]:.4f}  "
+              f"n={suff_n[s_i]}{flag}")
+    print("[chan] restricted to decisions where THIS channel's own emitted bin changed:")
+    for s_i in range(S_SLOTS):
+        print(f"[chan]   {names[s_i]:8s} recon={suff_recon_tr[s_i]:.4f}  "
+              f"features_only={suff_feat_tr[s_i]:.4f}  energy={suff_energy_tr[s_i]:.4f}  "
+              f"n={suff_n_trans[s_i]}")
+    # WHAT A NEAR-ZERO features_only DOES AND DOES NOT LICENCE.
+    #
+    # It is a FAILURE TO DETECT an additive feature component along the margin, not evidence
+    # that the channel is decided elsewhere. Three separate reasons, each sufficient on its own:
+    #
+    #   1. Both the true margin and the bias term are functions of the EMITTED token, so on a
+    #      channel emitting few distinct tokens the `recon` slope is partly tautological -- the
+    #      constant tracks the margin by tracking which token won, not by explaining why.
+    #   2. The slope is pooled over decisions dominated by already-settled ones. Simulation
+    #      shows features explaining EVERY transition perfectly still report a pooled slope
+    #      near zero on a channel that is unchanged ~95% of the time.
+    #   3. A zero slope with a large `energy` is a DIRECTION result, not an amplitude one: the
+    #      features write a lot and it does not lie along the margin.
+    #
+    # The transition block above is the control for (2) and `energy` is the control for (3);
+    # both are computed in this script. Neither is available in analyze_channels.py.
     if np.nanmin(suff_feat) < 0.15:
         worst_i = int(np.nanargmin(suff_feat))
-        print(f"[chan]   NOTE {names[worst_i]} recovers its margin almost entirely from the "
-              f"mu+b_pre bias.")
-        print("[chan]   On a near-binary channel that is partly tautological (both the margin "
-              "and the")
-        print("[chan]   bias depend on the emitted token), so lean on the transition-conditioned")
-        print("[chan]   statistics in analyze_channels.py before concluding anything about it.")
+        e, e_tr = suff_energy[worst_i], suff_energy_tr[worst_i]
+        print(f"[chan]   NOTE {names[worst_i]}: no additive feature component detected along "
+              f"the margin.")
+        print(f"[chan]   energy={e:.4f} (all decisions), {e_tr:.4f} (transitions only). "
+              f"features_only at transitions = {suff_feat_tr[worst_i]:.4f}.")
+        if np.isfinite(e) and e > 0.15:
+            print("[chan]   The feature term is LARGE and misaligned -- this is a direction "
+                  "result. Do NOT")
+            print("[chan]   report it as the features being absent or the channel being a "
+                  "default.")
+        else:
+            print("[chan]   The feature term is also small in energy, consistent with "
+                  "inertness, but a")
+            print("[chan]   pooled slope on a low-entropy channel cannot establish that on its "
+                  "own -- read the")
+            print("[chan]   transition row, which is the only one restricted to decisions that "
+                  "were live.")
     spread = float(np.nanmax(suff_recon) - np.nanmin(suff_recon))
     if spread > 0.15:
         print(f"[chan]   SPREAD {spread:.3f} across channels: cross-channel comparisons must be")
