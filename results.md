@@ -709,6 +709,38 @@ differ by ≤0.07 with P(general > specialist) of 0.51–0.62. There is no chann
 > per feature and should partly cancel. That pattern is more consistent with a shared artefact
 > than with seven channel-specific effects, and wants a shuffled-breadth control.
 
+### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
+
+`mrvla/channels.py` warns that the gripper is near-binary, emits extreme bins, and therefore
+carries the largest `||u_contrast||` — so every feature's |phi| should be inflated at slot 6 for
+a purely geometric reason. That warning has a consequence nobody had checked, and it is upstream
+of everything: `run_attribution.py` pools all seven slots, so if gripper decisions carry
+disproportionate mass then `C[task, feature]` — and with it Path A, and Steps 1 through 4 — is
+substantially a GRIPPER measurement rather than a general one.
+
+Read off the saved `C_slot_abs` (no rerun; the split is also printed by
+`run_channel_attribution.py:350`):
+
+| dx | dy | dz | droll | dpitch | dyaw | gripper |
+|---|---|---|---|---|---|---|
+| 0.1353 | 0.1331 | 0.1377 | 0.1503 | 0.1453 | 0.1446 | **0.1537** |
+| 0.95x | 0.93x | 0.96x | 1.05x | 1.02x | 1.01x | **1.08x** |
+
+An even split is 1/7 = 0.1429. **The observed range is 0.93x to 1.08x, and the gripper is 1.08x.**
+Causal mass is divided almost perfectly evenly across the seven action dimensions, so Path A is
+not gripper-weighted and the confound is closed.
+
+*This also undercuts the premise of the share correction.* If the geometric inflation were
+biting, the gripper's absolute share would sit well above 1/7. It does not. Either the effect is
+far smaller than the docstring assumes, or it is offset elsewhere in phi — fewer active features
+at gripper decisions, or a larger residual norm `r`, both of which sit in the denominator. The
+practical consequence is reassuring rather than alarming: absolute and share analyses should
+broadly agree, and `analyze_channels.py` already flags any sign disagreement between them
+("CONTRADICT -- believe share"). If that flag never tripped on the channel run, trap 1 was a
+non-issue throughout and the correction is harmless rather than load-bearing.
+
+---
+
 ### P5a. Channel breadth is a genuine second axis
 
 Effective number of action dimensions a feature drives: **3.21 of 7** (p10 1.33, p90 6.32), and
