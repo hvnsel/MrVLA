@@ -644,9 +644,22 @@ real suite instead peaks at half-size 3 or 4 and falls at 5. The shuffle floor i
 throughout, so the signal being measured is real; it simply is not the signal a fixed-true-score
 model produces.
 
-**Reading.** Causal breadth is a property of a feature *relative to a task distribution*, not an
-intrinsic property of the feature. Split-half disagreement is real variation rather than
-measurement error.
+**Reading — and how much weight it deserves.** Causal breadth is a property of a feature
+*relative to a task distribution*, not an intrinsic property of the feature. Split-half
+disagreement is real variation rather than measurement error.
+
+Note first how much of this is DEFINITIONAL. "General" here means high causal breadth over the
+suite's tasks, and a participation ratio over G tasks is relative to those G tasks by
+construction. The sweep adds one empirical fact beyond that tautology: the ranking does not
+survive swapping which tasks are used, *even within a single suite*. That threatens a claim
+nobody made — that there is an intrinsic general/specialist trait — and not the claim Path A
+actually makes, which is about PREDICTION (breadth on nine tasks predicts causal importance on a
+tenth) and does not require a stable latent trait.
+
+So this is a wording caveat rather than a threat, and it bites in one place: A4's
+characterisation of the two ends describes ONE PARTICULAR SELECTION, and a different ten tasks
+would select somewhat different features. The one consequence that is not merely wording is the
+disattenuation, which is invalid outright.
 
 *One alternative reading, which cannot be separated here.* The calibration assumes per-task
 variation is Dirichlet; genuinely heavier-tailed per-task variation would also depress agreement
