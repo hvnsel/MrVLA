@@ -27,6 +27,14 @@ recurs**, split into two axes:
 - **Net.** "General" and "recurrent-across-models" are two different properties.
   Path A is the finding; Path B is the boundary condition plus a methods
   contribution (a properly-defined causal-recurrence metric).
+- **What breadth turned out to mean (C1/C1a).** Breadth predicts where a feature
+  **writes** — attributed causal mass on a task it was never measured on, beyond
+  what its firing opportunity explains (+0.24 to +0.30 after that control, all
+  four suites). It does **not** predict where a feature **decides** — whether
+  deleting it changes the emitted token — beyond opportunity (≈ 0, sign flips
+  between suites). Same estimator, same folds, same control; only the target
+  differs. That dissociation, measured over 446k decisions per suite, is the
+  sharpest statement the data supports.
 - **Part 2 (below).** A measurement-validity pass over our own results. Path A now
   replicates in all four suites against a zero floor; concentration is quantified;
   the ablation null is bounded rather than absent; the "generality is gripper/phase
@@ -79,6 +87,11 @@ confounds fixed, under **leave-one-task-out (LOTO)** so no single task drives it
 - **partial | both folds = +0.493**, **positive in 10/10 folds.**
 - Robust to Spearman rank correlation and partial correlation (rank-residualize
   on magnitude + base_rate). Not a magnitude or base-rate artifact.
+
+> **Both corrections have since been applied and they run opposite ways.** P1b's curvature
+> correction takes +0.493 down to +0.452; C1's base-rate leak correction takes it up to
+> **+0.5624**. The figure to publish for goal is **+0.562**, and the four-suite set is
+> **+0.562 / +0.506 / +0.432 / +0.575**. The rest of this section is the original as written.
 
 **Reading:** breadth of causal influence is a stable, real property of a feature,
 not a firing-rate or amplitude shadow.
@@ -244,9 +257,21 @@ two permutation floors:
 p < 0.001 (1000 permutations) in every cell. **Causal task-breadth predicts held-out causal
 importance in all four suites, and the mechanical floor is zero.**
 
-> **These are the LINEAR-CONTROL values and every one of them is inflated by about a tenth.**
-> See P1b: the control plane cannot represent curvature, and there is curvature. The figures to
-> publish are +0.452 / +0.404 / +0.362 / +0.473.
+> **These are the LINEAR-CONTROL, LEAKED-CONTROL values. Two corrections apply, in opposite
+> directions, and the second is larger than the first.**
+>
+> *Curvature* (P1b): the control plane cannot represent curvature, and there is curvature. Takes
+> the four suites to +0.452 / +0.404 / +0.362 / +0.473.
+>
+> *Base-rate leak* (C1): `base_rate` is computed over all ten tasks including the held-out one,
+> so the second control carried part of its own target and was over-correcting. Rebuilt from the
+> training tasks only, the same estimator gives **+0.562 / +0.506 / +0.432 / +0.575**. These are
+> the figures to publish.
+>
+> **The floors below are unchanged and were computed under the leaked control.** They sit at
+> ~0.000 with sd ~0.007-0.010 and are a property of the estimator and the permutation, not of
+> which base-rate vector is used; the corrected partials therefore clear them by more than the
+> z's quoted here, which have deliberately not been recomputed.
 
 *The column shuffle is the floor that matters*: it permutes feature identity within each task
 row, preserving each task's marginal distribution of causal mass and the purely mechanical
@@ -291,12 +316,18 @@ same order as the numbers above — and under +0.12 under every enriched basis.
 (quadratic, cubic, piecewise-linear splines, and the full tensor product of two spline bases,
 which can absorb any smooth surface, additive or not):
 
-| suite | linear | **tensor4 (reported)** | correction | max excess | dR²(pred) | floor under tensor4 | z |
-|---|---|---|---|---|---|---|---|
-| goal | +0.4926 | **+0.4516** | −8.3% | +0.0460 | 0.107 | +0.0003 (sd 0.0063) | +71.9 |
-| spatial | +0.4488 | **+0.4036** | −10.1% | +0.0477 | 0.080 | +0.0006 (sd 0.0067) | +60.5 |
-| object | +0.3866 | **+0.3624** | −6.3% | +0.0267 | 0.106 | −0.0004 (sd 0.0070) | +52.0 |
-| libero-10 | +0.5347 | **+0.4725** | −11.6% | +0.0681 | 0.118 | +0.0008 (sd 0.0067) | +70.2 |
+| suite | linear | tensor4 | curvature | + leak-free base rate = **reported** | max excess | dR²(pred) | floor under tensor4 | z |
+|---|---|---|---|---|---|---|---|---|
+| goal | +0.4926 | +0.4516 | −8.3% | **+0.5624** | +0.0460 | 0.107 | +0.0003 (sd 0.0063) | +71.9 |
+| spatial | +0.4488 | +0.4036 | −10.1% | **+0.5059** | +0.0477 | 0.080 | +0.0006 (sd 0.0067) | +60.5 |
+| object | +0.3866 | +0.3624 | −6.3% | **+0.4321** | +0.0267 | 0.106 | −0.0004 (sd 0.0070) | +52.0 |
+| libero-10 | +0.5347 | +0.4725 | −11.6% | **+0.5748** | +0.0681 | 0.118 | +0.0008 (sd 0.0067) | +70.2 |
+
+**Two corrections, opposite directions, and the second is the larger.** Curvature takes every
+suite down by 6–12%; C1's base-rate leak correction takes it back up by +0.070 to +0.111. They
+are independent — curvature is about the SHAPE of the control surface, the leak is about which
+DATA the control vector is built from — and the reported column has both applied. The floor
+column is unchanged and was computed under the leaked control; see P1's note.
 
 **The curvature is real.** `dR²(pred)` is the extra variance the nonlinear terms explain when
 predicting ranked breadth from the controls: 8–12% in every suite. The largest correction lands
@@ -558,16 +589,23 @@ axis is solid (P1); the feature-level ranking is only weakly reproducible.** Two
    `r_true = r_obs / sqrt(r_xx * r_yy)`, and substituting the most favourable `r_yy = 1` gives
    a lower bound.
 
-   **Use the curvature-corrected correlation, not the original.** With P1b's +0.452 and
-   `r_xx` = 0.363 the bound is **|r_true| ≥ 0.750**. (An earlier version of this line used the
-   pre-correction +0.493 and reported ≥ 0.819; P1b's correction had not been propagated here.)
+   **This bound is retired — see P4a — and no corrected version replaces it.** The line has been
+   restated twice already as the input moved: ≥ 0.819 from the pre-curvature +0.493, then ≥ 0.750
+   from P1b's +0.452. With C1's leak correction the input is now +0.562 and the arithmetic would
+   give a larger number again. **Do not compute it.** P4a establishes that variation which is not
+   measurement error cannot be corrected away, so the classical model does not fit this data at
+   all; a bound that climbs toward 1.0 every time an unrelated correction lands is evidence the
+   estimator is unanchored, not evidence the result is strengthening.
 
-   **Do not publish 0.750 as a number.** The DIRECTION is a theorem — measurement noise can
-   only ever weaken a correlation, so the latent relationship is stronger than the measured
-   +0.452. The MAGNITUDE rests on three things that do not hold cleanly here.
+   The DIRECTION survives as a theorem — measurement noise can only ever weaken a correlation, so
+   the latent relationship is at least as strong as the measured +0.562. That sentence is the
+   whole of what this point supports. The MAGNITUDE rests on three things that do not hold
+   cleanly here:
 
-   *Two biases in `r_xx`, running opposite ways and neither measured.* The base-rate leak
-   inflates measured agreement, so true `r_xx` may be below 0.363 (raising the bound). But
+   *Two biases in `r_xx`, running opposite ways.* The base-rate leak inflates measured agreement,
+   so true `r_xx` may be below 0.363 (raising the bound) — that leak is no longer hypothetical,
+   C1 measures it at +0.070 to +0.111 on the partial itself, though its effect on `r_xx`
+   specifically is still unmeasured. But
    Spearman–Brown assumes the halves differ from the full measurement only in LENGTH, and
    halving 10 tasks to 5 also halves PR's ceiling, compressing the scale; on a toy with this
    geometry SB underestimated by a factor of 1.32, which would put `r_xx` near 0.479 and the
@@ -1004,7 +1042,7 @@ is largely firing opportunity (ρ = 0.74–0.86, C1).
 
 ---
 
-## C1. Breadth predicts held-out decisiveness — and that prediction is opportunity
+## C1. Breadth predicts where a feature writes, not where it decides
 
 **What was missing.** A3/P1 is the paper's central claim and it is correlational: breadth on 9
 tasks predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two
@@ -1074,38 +1112,95 @@ relationship does **not** extend to per-decision causal decisiveness once opport
 controlled, and it establishes that at ~446k decisions rather than P3's 200 episodes. P3's
 underpowered null is now bounded from a second direction.
 
-**It is also the third independent convergence on one fact.** P2b: the recurring coalition is the
-always-on features. P4a: breadth is task-set-relative, not feature-intrinsic. C1: ρ(breadth,
-opportunity) = 0.74–0.86, and nothing left after controlling. Three different methods on three
-different statistics, one answer — **what the paper calls breadth is substantially base
-activity.** Whether that is written as a limitation of Path A or as the paper's finding is a
-framing decision, not a section-level one.
+#### C1a. The same control applied to A3 — and it is a dissociation, not a debunking
 
-**One methodological by-product, and it points straight at the headline — but it is not settled.**
-`run_attribution.py` computes `base_rate` globally over *all* tasks including the held-out one, so
-A3's second control has always carried a little of its own target. The per-(feature, task) firing
-counts this pass added make a clean per-fold form computable for the first time, and swapping it
-in raises the ATTRIBUTED partial — A3's own headline — on all four suites:
+C1 conditions on the held-out task's firing count and the causal effect vanishes. The obvious
+next question, and for a while the one that decided whether the headline stood: does **A3** survive
+the same control? Same predictor, same controls, same folds, same basis (`hinge5`, because
+`control_design`'s tensor branch is not a true tensor product at three controls) — only the target
+differs.
 
-| | goal | spatial | object | 10 |
+| target | goal | spatial | object | 10 |
 |---|---|---|---|---|
-| A3 as published (tensor4) | +0.4516 | +0.4036 | +0.3624 | +0.4725 |
-| rebuilt, training tasks only | +0.5624 | +0.5059 | +0.4321 | +0.5748 |
-| delta | +0.111 | +0.102 | +0.070 | +0.102 |
+| A3, leak-free, 2 controls | +0.566 | +0.512 | +0.434 | +0.586 |
+| **+ opportunity control** | **+0.287** | **+0.303** | **+0.240** | **+0.264** |
+| retained | 0.51 | 0.59 | 0.55 | 0.45 |
+| *C1's causal target, same control* | *0.41* | *−0.49* | *0.01* | *−0.41* |
 
-**These numbers are not reportable yet and must not be quoted.** The swap changes two things at
-once: which tasks the base rate is built from (the leak) *and* how it is defined (P9's
-numerator/denominator mismatch). The comparison above attributes the whole move to the first.
-Worse, the stated mechanism does not obviously support the magnitude — the two vectors are
-0.999 rank-correlated, and a control that nearly identical moving a partial by 0.10 needs
-demonstrating rather than asserting.
+**A3 survives at about half strength, and the surviving half is consistent**: +0.24 to +0.30 in
+every suite, tightly clustered. The causal target retains nothing — mean ≈ 0 with the sign
+flipping between suites. Two targets, one estimator, opposite outcomes.
 
-`causal_breadth.py` now runs a four-way decomposition — shipped / rebuilt-all-tasks /
-rebuilt-training-only / **placebo** — where the placebo drops a task that is *not* the held-out
-one: same nine-of-ten construction, leak left in. On a synthetic fixture with a planted leak the
-placebo reproduces **76%** of what the leak arm shows, which is exactly the over-attribution the
-control exists to catch. Until the four-way table has been read on real data, the honest statement
-is that A3's control has a known leak of **unmeasured size**.
+**So the finding is a dissociation:**
+
+> Breadth predicts where a feature **writes** — attributed causal mass on a task it was not
+> measured on — beyond what its firing opportunity explains. It does **not** predict where a
+> feature **decides** — whether deleting it changes the emitted token — beyond opportunity.
+
+This is what C1 is for, and it is a sharper claim than either half alone. It also right-sizes the
+convergence with P2b (the recurring coalition is the always-on features) and P4a (breadth is
+task-set-relative): those three results together do **not** show that breadth is merely base
+activity. They show that roughly half of it is, that the half that is not is real and replicates,
+and that the part which fails to transfer is specifically *decisiveness*.
+
+**The limits from C1 carry over unchanged.** The opportunity control is a lower bound by
+construction — breadth partly *is* firing across many tasks — so +0.24 to +0.30 is a floor on the
+non-opportunity component, not an estimate of it. And there is no permutation floor for the
+controlled statistic; what makes the contrast readable is that the same control on the same folds
+gives a consistent positive on one target and a sign-flipping zero on the other.
+
+**One methodological by-product, and it moved the paper's headline.** `run_attribution.py:314`
+computes `base_rate` globally over *all* tasks including the held-out one, so A3's second control
+has always carried part of its own target — and controlling for a variable that contains the
+target over-corrects, suppressing the partial. The per-(feature, task) firing counts this pass
+added make a leak-free per-fold form computable for the first time. On the ATTRIBUTED target,
+i.e. A3's own headline:
+
+| control (tensor4 throughout) | goal | spatial | object | 10 |
+|---|---|---|---|---|
+| A — shipped `base_rate` | +0.4516 | +0.4036 | +0.3624 | +0.4725 |
+| B — rebuilt from counters, all 10 tasks | +0.4516 | +0.4036 | +0.3624 | +0.4725 |
+| **C — rebuilt, 9 training tasks (leak-free)** | **+0.5624** | **+0.5059** | **+0.4321** | **+0.5748** |
+| P — placebo: drops a NON-held task | +0.4405 | +0.3885 | +0.3531 | +0.4686 |
+| **leak = C − B** | **+0.111** | **+0.102** | **+0.070** | **+0.102** |
+| composition = P − B | −0.011 | −0.015 | −0.009 | −0.004 |
+
+**The decomposition exists because a +0.10 uplift on the central claim, in the flattering
+direction, is exactly the shape of result this project has got wrong before.** Swapping the
+control changes two things at once, and three explanations had to be eliminated before the leak
+could be credited:
+
+* **Definition.** `run_attribution.py:291` accumulates the numerator over all rows but the
+  denominator only over valid ones (P9). Measured: **B − A = 0.0000 in every suite,
+  ρ(A, B) = 1.00000** — exactly a uniform scale factor at ranking precision. It is a real defect
+  and it has no effect on the control. It also means the counter-rebuilt vector *is* the shipped
+  one for ranking purposes, which is what licenses the substitution.
+* **Sample composition.** Ruled out by the placebo: −0.004 to −0.015 against the leak arm's
+  +0.070 to +0.111.
+* **Noise in the control** — the subtle one. A base rate from 9 tasks is noisier than from 10,
+  and a noisier control removes less confound, which would raise the partial for a bad reason.
+  The placebo has *identical* noise, same nine-of-ten construction with the leak left in, and it
+  does nothing.
+
+The two control vectors are 98.7–99.3% rank-correlated, which was the reason for doubt: a control
+that similar should not move a partial by 0.10. The placebo answers it. The placebo is equally
+~99% correlated and moves nothing, so the ~1% that changes when *the held-out task specifically*
+is dropped is the target-aligned 1%. The leak is concentrated rather than diffuse.
+
+**Net on the headline**, with both corrections applied: `+0.493 → +0.452 (curvature)
+→ +0.562 (leak)`. The leak correction is larger than the curvature correction and runs the other
+way. Propagated to A3, P1 and P1b.
+
+**Three limits carried with it.** The corrected control is built from the channel run's counters
+rather than from `run_attribution.py`, justified only by B ≡ A being *measured*. The permutation
+floors were computed under the leaked control, so the quoted z's are the old ones — the corrected
+partials clear those floors by more, not less. And no permutation test was run on the arm
+*differences* themselves; they are 0.070–0.111 against a floor sd of ~0.007, so the separation is
+not marginal, but it is not a formal test.
+
+`run_attribution.py` is deliberately **not** patched: fixing `base_rate` at source moves every
+published number and needs four GPU jobs, so it is a pre-publication decision, recorded in P9
+alongside the `_ranks` tie defect.
 
 ---
 
@@ -1235,18 +1330,28 @@ cosmetic in practice: the same decoder through another model's head gives mean c
 | `_ranks` uses `argsort(argsort(x))`, which breaks ties by **array index** instead of averaging | **not fixed** — see below |
 | `corr(damage, attribution)` bootstrap resampled tasks while treating each task's damage as fixed | fixed (two-level); the −0.770 it produced on the goal coalition was noise-on-noise |
 | shared-unembedding assumption (P8) | fixed; per-model heads |
-| `base_rate`'s numerator counts every row, its denominator only valid rows (`run_attribution.py:291-314`) | **not fixed** — see below |
+| `base_rate`'s numerator counts every row, its denominator only valid rows (`run_attribution.py:291-314`) | **not fixed** — but measured: no effect on the ranking (ρ = 1.00000, C1) |
 | the transition control was the gripper's clock broadcast to all seven slots (P5d) | fixed; per-channel mask, new output dir so old numbers stay reproducible |
-| `base_rate` is computed over all tasks including the held-out one, so A3's second control carries some of its own target | **not fixed** — size unresolved, see C1 |
+| `base_rate` is computed over all tasks including the held-out one, so A3's second control carries some of its own target | **not fixed at source** — measured at +0.070 to +0.111 on A3's headline; corrected figures reported via `causal_breadth.py` (C1) |
 
 **The base-rate numerator and denominator disagree.** `run_attribution.py` accumulates
 `fire_count` over **all** `n*7` rows but increments `n_total` only after the invalid-token
 `continue`, so the published `base_rate` is `fires(all rows) / count(valid rows)` — inflated by
 about `1/0.992`. That is close to a uniform scale factor, which a rank control ignores; it is not
 exactly one, because wherever invalid tokens are unevenly distributed across features the
-inflation is feature-specific and the ranking shifts. Small, but it means the shipped `base_rate`
-and any rebuilt-from-counters version differ **by definition as well as by the leak**, which is
-why C1's uplift has to be decomposed rather than attributed.
+inflation is feature-specific and the ranking shifts. **C1's decomposition measured this and it is
+zero**: rebuilding the vector from the channel counters gives ρ = 1.00000 against the shipped one
+and a partial identical to four decimal places in all four suites. So the defect is real, worth
+fixing at source, and demonstrably does not touch any published ranking — which is also what
+licenses using the counter-rebuilt vector to price the leak.
+
+**The base rate leaks the held-out task, and it costs A3 about 0.10.** `fire_count` is
+accumulated over every task, so the control used to predict task `gi` contains task `gi`'s own
+firing counts, which predict the target. Controlling for a variable that contains the target
+over-corrects. Removing the leak raises the four-suite headline from +0.452 / +0.404 / +0.362 /
++0.473 to **+0.562 / +0.506 / +0.432 / +0.575** (C1, with a placebo ruling out sample composition
+and control noise). Not patched here: fixing it at source moves every published number and needs
+four GPU re-runs, so it is a pre-publication decision like the tie defect below.
 
 **The tie defect is live and it matters.** `base_rate` is a count over a fixed denominator, so
 **10.3% of goal's features are tied**, and each tied block receives an arbitrary ordering
@@ -1261,7 +1366,7 @@ published numbers. **That should be a deliberate decision before publication, no
 
 | claim | before Part 2 | after |
 |---|---|---|
-| Path A: breadth predicts held-out causal importance | goal only, no floor | **4/4 suites, floor ≈ 0, z = 40–56, \|r_true\| ≥ 0.82** |
+| Path A: breadth predicts held-out causal importance | goal only, no floor | **4/4 suites, floor ≈ 0, z = 40–56. +0.562 / +0.506 / +0.432 / +0.575 after both corrections (curvature P1b, base-rate leak C1)** |
 | Influence is concentrated and reproducible | verbal | **n_eff 10–106 of 2048; top-50 recurs at 34–37× chance** |
 | Coalition ablation | unreported null | **bounded null: damage < 11.9 pts, design resolves 9.7** |
 | Generality is channel-localised (gripper/phase) | untested | **falsified: partial +0.069** |
@@ -1271,6 +1376,7 @@ published numbers. **That should be a deliberate decision before publication, no
 | Splitting explains the Path B null | untested, plausible | **falsified in all four suites: every decile rises slower than the random floor** |
 | Rollout ablation tests coded features | assumed | **71.5% of its effect is on decisions the feature never fired on** |
 | Breadth predicts held-out causal *decisiveness* | never tested | **4/4 suites +0.11 to +0.26 over 446k decisions, all floors cleared — but it is opportunity: ≈ 0 once firing count is controlled (C1)** |
+| Is A3 itself just opportunity? | never tested | **no. Survives the same control at ~half strength, +0.24 to +0.30 in all four suites. A dissociation: breadth predicts where a feature WRITES, not where it DECIDES (C1a)** |
 | The gripper's features are inert | claimed from a −0.046 slope | **falsified: feature term is 0.27–1.07× the margin's scale, mostly perpendicular, cosine −0.39 to −0.94 on live decisions (P5b)** |
 | Causal mass is not gripper-weighted | goal only | **holds on goal/spatial/object; libero-10's gripper takes 0.216 vs 0.143 even (P5c)** |
 | `_trans` statistics are comparable across channels | assumed | **were not — the mask was the gripper's, broadcast to all seven. Fixed (P5d)** |
