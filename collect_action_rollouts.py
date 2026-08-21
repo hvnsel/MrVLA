@@ -84,8 +84,12 @@ def main() -> None:
         print(f"[rollout] head constants: {hc}", flush=True)
 
     collector = ActionPositionCollector(layers[args.layer])
+    # Per-worker shard namespace. Without it, four workers sharing --out each start their
+    # counter at 0 and overwrite one another -- silently, because the analysis just globs
+    # shard_*.npz and reports on whatever is left.
     writer = RolloutShardWriter(args.out, hidden_dim=d, action_dim=args.action_dim,
-                                shard_size=args.shard_size)
+                                shard_size=args.shard_size,
+                                prefix=f"shard_w{args.worker_id}")
     try:
         per_task = rollout_action_positions(
             model, processor, collector, writer,

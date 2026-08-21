@@ -52,6 +52,12 @@ __all__ = ["RolloutShardWriter", "commit_episode", "rollout_action_positions"]
 class RolloutShardWriter:
     """Shard writer for closed-loop action-position rollouts.
 
+    `prefix` namespaces the shard files. It is not cosmetic: every writer's shard counter
+    starts at 0, so two workers pointed at one directory with the same prefix overwrite each
+    other and the loss is SILENT -- the analysis reads whatever survived and reports
+    confident numbers on a fraction of the data. `flush` refuses to clobber an existing
+    shard so that failure can never be quiet again.
+
     Field names deliberately match A1's shards (`residual`, `episode`, `timestep`,
     `task_id`) so any loader written against those works here, plus the two fields A1
     cannot have: `action` (what was executed) and `success` (how the episode ended).
@@ -62,8 +68,9 @@ class RolloutShardWriter:
     """
 
     def __init__(self, out_dir: str, hidden_dim: int, action_dim: int = 7,
-                 shard_size: int = 4000, dtype: str = "float16"):
+                 shard_size: int = 4000, dtype: str = "float16", prefix: str = "shard"):
         self.out_dir = out_dir
+        self.prefix = prefix
         self.hidden_dim = int(hidden_dim)
         self.action_dim = int(action_dim)
         self.shard_size = int(shard_size)
@@ -103,7 +110,12 @@ class RolloutShardWriter:
     def flush(self) -> None:
         if not self._res:
             return
-        path = os.path.join(self.out_dir, f"shard_{self._shard:05d}.npz")
+        path = os.path.join(self.out_dir, f"{self.prefix}_{self._shard:05d}.npz")
+        if os.path.exists(path):
+            raise FileExistsError(
+                f"{path} already exists. Sharded workers MUST use distinct `prefix` values "
+                f"or they silently overwrite each other's data -- every worker's counter "
+                f"starts at 0, so a shared prefix means only the last writer survives.")
         np.savez_compressed(
             path,
             residual=np.stack(self._res, axis=0),
@@ -130,7 +142,7 @@ class RolloutShardWriter:
             "tasks": {str(k): v for k, v in sorted(self.tasks.items())},
         }
         manifest.update(extra or {})
-        with open(os.path.join(self.out_dir, "manifest.json"), "w") as f:
+        with open(os.path.join(self.out_dir, f"manifest_{self.prefix}.json"), "w") as f:
             json.dump(manifest, f, indent=2)
 
 
