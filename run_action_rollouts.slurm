@@ -5,15 +5,20 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=80g
+#SBATCH --mem=160g
 #SBATCH --gpus-per-node=4
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=/u/hzhang77/mrvla/logs/actroll_%x_%j.out
 #
 # Closed-loop rollouts storing action-position residuals AND success labels.
 #   sbatch run_action_rollouts.slurm goal
 #
 # 50 init states x 10 tasks = 500 episodes, sharded over 4 GPUs by task. ~5 GB.
+#
+# Walltime is 24h against a ~5-7h estimate. That is deliberate overshoot: the estimate comes
+# from a 15-episode smoke, failures burn all 300 steps where successes stop early, and the
+# task split is uneven (workers 0 and 1 draw 150 episodes, workers 2 and 3 draw 100). A job
+# that overruns loses every episode collected so far; one that finishes early costs nothing.
 # Sharding is by TASK, so each worker's init-state ordering matches a single-process run
 # and success rates stay comparable with the ablation runs.
 #
