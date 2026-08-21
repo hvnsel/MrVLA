@@ -39,6 +39,13 @@ def _writer(tmp, **kw):
     return RolloutShardWriter(tmp, hidden_dim=D, action_dim=A, **kw)
 
 
+def _manifest(tmp):
+    """The manifest is namespaced by prefix, so tests resolve it rather than hardcode it."""
+    hits = glob.glob(os.path.join(tmp, "manifest_*.json"))
+    assert len(hits) == 1, hits
+    return hits[0]
+
+
 def _row(seed=0):
     r = np.random.default_rng(seed)
     return r.normal(size=(A, D)).astype(np.float32), r.normal(size=A).astype(np.float32)
@@ -78,7 +85,7 @@ def test_failures_are_never_dropped():
         w.close()
         d = np.load(glob.glob(os.path.join(tmp, "shard_*.npz"))[0])
         assert sorted(d["success"].tolist()) == [0, 0, 1, 1]
-        assert json.load(open(os.path.join(tmp, "manifest.json")))["total_timesteps"] == 4
+        assert json.load(open(_manifest(tmp)))["total_timesteps"] == 4
 
 
 def test_commit_episode_handles_an_empty_buffer():
@@ -87,7 +94,7 @@ def test_commit_episode_handles_an_empty_buffer():
         w = _writer(tmp)
         assert commit_episode(w, [], False, episode=0, task_id=0) == 0
         w.close()
-        assert json.load(open(os.path.join(tmp, "manifest.json")))["total_timesteps"] == 0
+        assert json.load(open(_manifest(tmp)))["total_timesteps"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +140,7 @@ def test_shards_roll_over_and_nothing_is_lost():
         assert len(shards) == 3, shards
         total = sum(np.load(s)["residual"].shape[0] for s in shards)
         assert total == 25
-        man = json.load(open(os.path.join(tmp, "manifest.json")))
+        man = json.load(open(_manifest(tmp)))
         assert man["total_timesteps"] == 25 and man["n_shards"] == 3
 
 
@@ -154,7 +161,7 @@ def test_manifest_records_tasks_and_extra():
         w.register_task(0, "put the bowl on the plate")
         w.add(*_row(0), episode=0, timestep=0, task_id=0, success=0)
         w.close(extra={"model": "openvla/x", "success_rate": 0.0})
-        man = json.load(open(os.path.join(tmp, "manifest.json")))
+        man = json.load(open(_manifest(tmp)))
         assert man["tasks"]["0"] == "put the bowl on the plate"
         assert man["model"] == "openvla/x"
         assert man["kind"] == "closed_loop_action_positions"
@@ -169,6 +176,50 @@ def test_field_names_match_the_a1_contract():
         keys = set(np.load(glob.glob(os.path.join(tmp, "shard_*.npz"))[0]).files)
         assert {"residual", "episode", "timestep", "task_id"} <= keys, keys
         assert {"action", "success"} <= keys, keys
+
+
+# ---------------------------------------------------------------------------
+# multi-worker output -- the collision that destroyed a 500-episode run
+# ---------------------------------------------------------------------------
+def test_workers_sharing_a_directory_do_not_overwrite_each_other():
+    """Every writer's shard counter starts at 0, so a shared prefix means the last worker
+    wins and the loss is silent: the analysis globs whatever survived and reports confident
+    numbers on a fraction of the data. This is not hypothetical -- it cost a full run."""
+    with tempfile.TemporaryDirectory() as tmp:
+        for w in range(4):
+            wr = _writer(tmp, shard_size=2, prefix=f"shard_w{w}")
+            for i in range(4):
+                wr.add(*_row(w * 10 + i), episode=w, timestep=i, task_id=0, success=w % 2)
+            wr.close()
+        shards = sorted(glob.glob(os.path.join(tmp, "shard_*.npz")))
+        assert len(shards) == 8, shards                      # 4 workers x 2 shards each
+        total = sum(np.load(s)["residual"].shape[0] for s in shards)
+        assert total == 16, total                            # nothing lost
+        assert sorted(np.unique(np.concatenate(
+            [np.load(s)["episode"] for s in shards]))) == [0, 1, 2, 3]
+
+
+def test_a_shared_prefix_raises_instead_of_clobbering():
+    """If two writers ever do collide again, it must be an error, not lost data."""
+    with tempfile.TemporaryDirectory() as tmp:
+        a = _writer(tmp, shard_size=1)
+        a.add(*_row(0), episode=0, timestep=0, task_id=0, success=1)
+        b = _writer(tmp, shard_size=1)
+        try:
+            b.add(*_row(1), episode=1, timestep=0, task_id=0, success=0)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("second writer silently overwrote the first")
+
+
+def test_manifests_are_per_worker_too():
+    with tempfile.TemporaryDirectory() as tmp:
+        for w in range(2):
+            wr = _writer(tmp, prefix=f"shard_w{w}")
+            wr.add(*_row(w), episode=w, timestep=0, task_id=0, success=1)
+            wr.close()
+        assert len(glob.glob(os.path.join(tmp, "manifest_*.json"))) == 2
 
 
 # ---------------------------------------------------------------------------
