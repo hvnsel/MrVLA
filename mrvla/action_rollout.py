@@ -182,6 +182,11 @@ def rollout_action_positions(model, processor, collector, writer, task_suite_nam
     from mrvla.torch_compat import allow_numpy_pickles
     allow_numpy_pickles()
 
+    # run_ablation.run_episode does this and this loop did not. predict_action does not
+    # disable grad itself, so over a 500-episode job the graph accumulates for no reason.
+    import torch
+    torch.set_grad_enabled(False)
+
     if max_steps is None:
         max_steps = _SUITE_MAX_STEPS.get(task_suite_name, 300)
 
