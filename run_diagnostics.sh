@@ -73,4 +73,26 @@ else
 fi
 
 echo
+echo "=== 6. Causal breadth: does breadth predict DECISIVENESS on a held-out task? ==="
+# Needs a channel run carrying the per-(feature, task, slot) counters, i.e. one produced with
+# --all-features (sbatch run_channels.slurm <suite> all). The candidate-only runs under
+# CHANNELS/<suite> cover the two extremes of the predictor under test and are deliberately not
+# used here: extreme-group sampling inflates the correlation by construction.
+shopt -s nullglob
+found_cb=0
+for s in "${SUITES[@]}"; do
+    cp="$BASE/CHANNELS/${s}_all/layer_31_channels.npz"
+    ap="$(attr_path "$s")"
+    [ -f "$cp" ] && [ -f "$ap" ] || continue
+    found_cb=1
+    echo "--- $s ---"
+    python causal_breadth.py --chan "$cp" --attr "$ap" --suite "$s" --n-perm 1000 \
+        --out "$OUT/causal_breadth_$s.json" | tee "$OUT/causal_breadth_$s.txt"
+done
+shopt -u nullglob
+if [ "$found_cb" -eq 0 ]; then
+    echo "  (skip: no CHANNELS/<suite>_all run found -- sbatch run_channels.slurm <suite> all)"
+fi
+
+echo
 echo "wrote $OUT"

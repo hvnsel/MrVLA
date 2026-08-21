@@ -695,19 +695,42 @@ so channel identity is positional. `run_attribution.py` discards that axis. Reco
 **0.9919**) gives a second breadth axis and tests a sharp hypothesis: *are general features
 gripper/phase detectors?*
 
-**They are not.** corr(adjusted breadth, gripper concentration), rank-residualised on magnitude
-and base rate, is **+0.069**. The same partial for all seven channels:
+**They are not.** corr(adjusted breadth, channel concentration), rank-residualised on
+magnitude and base rate, reported in BOTH forms — absolute is primary, share is the robustness
+check (`channels_raw.py`; see P5c for why that ordering, and P5d for what the share form does to
+the gripper):
 
-| dx | dy | dz | droll | dpitch | dyaw | gripper |
-|---|---|---|---|---|---|---|
-| +0.081 | +0.083 | **+0.195** | +0.089 | +0.099 | +0.162 | +0.069 |
+| | dx | dy | dz | droll | dpitch | dyaw | gripper |
+|---|---|---|---|---|---|---|---|
+| **absolute** | +0.083 | +0.084 | **+0.188** | +0.088 | +0.096 | +0.162 | +0.082 |
+| share | +0.081 | +0.083 | +0.195 | +0.089 | +0.099 | +0.162 | +0.069 |
+| delta | −0.001 | −0.001 | +0.007 | +0.000 | +0.002 | +0.001 | **−0.013** |
 
-All small, all positive, gripper *lowest* of the group. General-vs-specialist channel profiles
-differ by ≤0.07 with P(general > specialist) of 0.51–0.62. There is no channel story.
+**0/7 sign disagreements, largest delta 0.013.** The two forms agree, so no conclusion here
+depends on the normalisation.
+
+Read the absolute row: **five channels sit flat at 0.082–0.096 — dx, dy, droll, dpitch and the
+gripper — and two stand out at roughly double, dyaw (0.162) and dz (0.188).** General-vs-specialist
+channel profiles differ by ≤0.07 with P(general > specialist) of 0.51–0.62.
+
+**Breadth is unrelated to five of the seven action dimensions, the gripper among them, and
+relates only mildly to vertical translation and wrist yaw.** The gripper hypothesis is dead: the
+gripper is indistinguishable from dx. That dz and dyaw are the two mildly elevated channels is a
+substantive aside rather than a null — lift and twist are what grasping and releasing physically
+involve.
+
+> **Do not claim the gripper is the LOWEST of the seven.** In the absolute form it beats dx by
+> 0.0002, which is noise. That claim held only in the share form (0.069 vs 0.081), where the gap
+> was produced by a normalisation that P5c shows corrects nothing here.
 
 > All seven partials coming out positive is itself odd, since the seven concentrations sum to 1
 > per feature and should partly cancel. That pattern is more consistent with a shared artefact
-> than with seven channel-specific effects, and wants a shuffled-breadth control.
+> than with seven channel-specific effects. It is **not** a normalisation artefact — the absolute
+> row is all-positive too — so it lives in the underlying quantity.
+>
+> A shuffled-breadth control would settle it and has not been run. **It is a footnote, not a
+> to-do**: a shared additive offset of ~+0.08 would leave five channels at ≈0 and two at ≈+0.08,
+> which is the same conclusion in cleaner form. It cannot overturn anything.
 
 ### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
 
@@ -741,6 +764,45 @@ non-issue throughout and the correction is harmless rather than load-bearing.
 
 ---
 
+### P5d. The transition control is gripper-defined, and the share correction is inert
+
+Two objections to how the channel analysis treats the gripper. One is a real defect.
+
+**The transition control is built from the gripper's tokens and broadcast to every channel.**
+`run_channel_attribution.py:236-238`:
+
+```
+grip      = tok_rows.reshape(n, n_sl)[:, args.gripper_slot]
+trans_dec = transition_mask(grip, ep_of, ts_of)
+trans     = np.repeat(trans_dec, n_sl)          # broadcast to ALL seven slots
+```
+
+So `flip_trans` for dx means *"dx flipped at a timestep where the GRIPPER changed"*, which
+controls for nothing — dx changes on ~95% of steps regardless. **The `_trans` family is not
+comparable across channels**, and any table mixing gripper `_trans` with dx `_trans` compares two
+different conditionings. The fix is a per-channel mask built from each channel's own emitted
+bins, which needs a rerun of the GPU pass. Until then, do not report `_trans` comparisons across
+channels — and note that "swap in `flip_active_trans`" would fix the gripper figure while
+breaking its six comparators.
+
+**The share normalisation is applied uniformly, and on this data it corrects nothing.** Measured
+per channel: 0/7 sign disagreements, largest absolute-vs-share delta 0.013. Simulated at the
+decision level against a planted ground-truth channel profile
+(`tests/test_channels_raw.py`), the trade-off is:
+
+| | absolute vs truth | share vs truth |
+|---|---|---|
+| one slot inflated 10x | 0.52 | **0.07** |
+| no scale difference | **0.011** | 0.066 |
+
+The normalisation divides each slot by ITS OWN typical decision total, which is a distortion
+whether or not a `||u_contrast||` difference exists. Where the confound is real that is a large
+win; where it is not, it leaves the answer roughly six times further from the truth than the raw
+numbers. P5c reports no confound here, so **absolute is the more accurate form on this data and
+is reported as primary**, with share as the robustness check.
+
+---
+
 ### P5a. Channel breadth is a genuine second axis
 
 Effective number of action dimensions a feature drives: **3.21 of 7** (p10 1.33, p90 6.32), and
@@ -749,21 +811,83 @@ map §3.3 wanted, built from data already collected.
 
 ### P5b. The gripper is a default, not a decision
 
-Per-slot sufficiency (fraction of each channel's action margin the features additively recover):
+The action margin decomposes exactly at frozen r as `true = features + bias + error`, where
+*features* is `l2·Σ z_j w_j` (different every decision) and *bias* is `μ·1 + b_pre` (the same
+constant at every decision). Reporting all four columns rather than two makes the result legible:
 
-| | dx | dy | dz | droll | dpitch | dyaw | gripper |
-|---|---|---|---|---|---|---|---|
-| features + bias | 0.940 | 0.934 | 0.905 | 0.949 | 0.920 | 0.937 | **0.992** |
-| features alone | 0.607 | 0.833 | 0.593 | 0.903 | 0.923 | 0.776 | **−0.046** |
+| channel | features | bias | = recon | error |
+|---|---|---|---|---|
+| dx | 0.607 | 0.333 | 0.940 | 0.060 |
+| dy | 0.833 | 0.101 | 0.934 | 0.066 |
+| dz | 0.593 | 0.312 | 0.905 | 0.095 |
+| droll | 0.903 | 0.046 | 0.949 | 0.051 |
+| dpitch | 0.923 | −0.003 | 0.920 | 0.080 |
+| dyaw | 0.776 | 0.160 | 0.936 | 0.064 |
+| **gripper** | **−0.046** | **1.038** | **0.992** | **0.008** |
 
-The gripper's margin is recovered almost entirely by the μ+b_pre bias; the features contribute
-nothing. This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the
-gripper. Necessity agrees: removing a feature changes the gripper token on 0.0006–0.0010 of
-decisions it fires on, against 0.029–0.057 for dx.
+**The bias column is the finding.** Six channels sit at 0.00–0.33. The gripper is at **1.038** —
+the constant alone *overshoots* the margin and the features pull it back by 4.6%. Its error is
+also the smallest of the seven (0.008), because a constant fits a near-constant target almost
+exactly. `dpitch` is the mirror image at −0.003: its features do all the work.
 
-*Caveat*: on a near-binary channel both the true margin and the bias term are functions of the
-emitted token, so a high `recon` slope is partly tautological. The transition-conditioned figures
-are the control.
+**Mechanically**, this follows from the gripper token being unchanged on ~95% of timesteps. Its
+margin is large and near-constant; a constant explains a constant, and a term that varies every
+decision has nothing left to explain. You cannot explain something that does not change with
+something that does. Compare dx, whose margin swings every step, so the constant captures only
+the mean and the features do the varying work.
+
+This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the gripper.
+
+**This does not contradict P5c**, and the apparent tension is worth stating explicitly because it
+reads like one. The gripper carries an entirely normal share of causal MASS (0.1537, 1.08x even),
+yet contributes nothing to the MARGIN. Those are different objects: causal mass is `sum |phi|`
+with the sign discarded, while the margin term is the SIGNED sum `|sum phi|`. A set of features
+pushing +0.4, −0.3, +0.5, −0.6 carries 1.8 of mass and delivers 0.0 to the answer. At the gripper
+the features are active and carrying magnitude; their signed contributions simply cancel, and the
+constant carries the answer instead.
+
+Path A and Steps 1–4 are built on causal mass. This table is built on the signed margin. They can
+say different things about the same channel without either being wrong.
+
+> **Three caveats, none of which are worth running down.**
+>
+> *The metric is a calibration slope, not R².* `Σ(true·pred)/Σ(true²)` asks whether the
+> reconstruction tracks the margin at the right SCALE on average; it does not penalise scatter,
+> so a noisy but unbiased reconstruction scores 1. This is the same statistic A1 used for the
+> 0.936 gate and it is applied identically to all seven channels, so the comparison is fair — but
+> "0.94" means "tracks at 94% of size", not "explains 94% of variance".
+>
+> *Partly tautological on a near-binary channel.* Both the true margin and the bias term are
+> functions of the emitted token, so a high `recon` slope for the gripper is expected by
+> construction.
+>
+> *A projection of zero cannot distinguish "nothing there" from "plenty there, pointing
+> sideways".* The statistic accumulates `sum(true*feat)` and `sum(true^2)` but never
+> `sum(feat^2)`, and that missing term is the one that separates the two. Simulated: features
+> that are genuinely inert and features that are loud but misaligned both return a slope of
+> ~0.00 while their energies differ by a factor of ~20000. There are also two flavours of
+> cancellation the number cannot tell apart — WITHIN a decision (`sum_j phi_j` ~ 0 because
+> features oppose each other) and ACROSS decisions (`sum_j phi_j` is large but its sign relative
+> to the margin flips). P5c establishes that individual |phi_j| are substantial at gripper
+> decisions (1.08x even mass), so at least some within-decision cancellation is occurring, but
+> the per-decision NET is not recorded anywhere.
+>
+> **Therefore state the claim as "the features' net contribution does not align with the emitted
+> margin", and not as "features do not drive the gripper".** The stronger reading is not
+> supported. Adding a `sum(feat^2)` accumulator per slot would settle it in two lines, in the
+> same GPU pass the per-channel transition mask already requires: near zero earns the strong
+> claim, large means the features are doing something orthogonal to the margin and "the gripper
+> is a default" is the wrong description of it.
+>
+> *No transition-conditioned control exists for this table.* `suff` is indexed by slot only
+> (`run_channel_attribution.py:225`), so the figures cover ALL decisions including the ~95% where
+> the gripper is not moving. The `_trans` variants exist for the flip counters, not for
+> sufficiency. **Whether features explain the gripper AT TRANSITIONS is untested**, and an earlier
+> version of this section wrongly claimed the transition figures were the control for it.
+>
+> The necessity comparison is dropped rather than caveated: it quoted `flip_active`, counted over
+> all gripper decisions, and its `_trans` alternative is conditioned on the gripper's own clock
+> broadcast to every channel (P5d), so neither variant supports a cross-channel table.
 
 ---
 
@@ -1011,6 +1135,61 @@ published numbers. **That should be a deliberate decision before publication, no
   cannot be defended against "both measures are too noisy to correlate". Cheapest
   estimate: `q_cross` recomputed on disjoint halves of the probe frames. See the
   diagnostics note.
+
+### C1. Causal breadth — built and pre-registered, not yet run
+
+**The gap.** A3/P1 is the paper's central claim and it is correlational: breadth on 9 tasks
+predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two Phase-2
+results leave it exposed. P3 shows the rollout ablation cannot test it causally at any feasible
+scale (MDE 9.7 points pooled, 18 per task *at the ceiling*, and LIBERO caps at 50 initial
+states). P6a is well-powered and shows general ≈ random on the *pooled* per-firing flip rate —
+but pooled flip rate is average strength, and breadth after residualisation on magnitude is a
+claim about **scope**. The scope version has never been run.
+
+**The experiment.** Same predictor, same controls, same folds, same curvature-corrected basis
+ladder; the target becomes the readout counterfactual flip rate on the held-out task. That is a
+causal quantity carrying ~446k decisions of power rather than 200 episodes. Implemented in
+`causal_breadth.py`; the GPU pass it needs is `sbatch run_channels.slurm <suite> all`.
+
+Three design decisions, each with a test pinning it:
+
+* **All 2048 features, not `pick_candidates`' ~396.** Those are the two extremes of the very
+  predictor under test, and extreme-group sampling inflates |r| by construction
+  (`test_selecting_on_the_predictor_inflates_the_correlation` measures how much). This cannot
+  be approximated by raising `--top`: past the eligible count `select_general_specialist`
+  returns the same set for both ends and the contrast stops being a contrast.
+* **Coded semantics only.** P6 established that projection strips a subspace rather than a
+  feature and that 71.5% of its flips land where the feature wrote nothing.
+* **A third floor.** The target is a **ratio**, and a ratio can manufacture a positive partial
+  out of denominator structure alone: under a null where every feature is equally decisive,
+  small-denominator cells pile up at an exact zero while large ones sit near p̄, so rank(y)
+  tracks the denominator — which tracks base rate, which tracks breadth. Neither the mechanical
+  nor the estimator floor detects this. `binomial_denominator_null` redraws the target as
+  Binomial(N, p̄) keeping every denominator exactly, and is the floor this design turns on.
+
+**Pre-registered reading**, fixed before any number is seen:
+
+| outcome | condition | what it means |
+|---|---|---|
+| **Causal** | partial ≥ +0.15, ≥9/10 folds positive, z > 5 on both the mechanical and the binomial floor, ≥60% retained under the denominator control | breadth is a scope property that transfers *causally*, not only attributionally. Retires P3's underpowered null and answers P6a with the measurement P6a did not make. |
+| **Bounded null** | \|partial\| < 0.05 with all floors at zero | attributed mass transfers; per-decision decisiveness does not. Breadth says where a feature **writes**, not where it **decides** — a real narrowing of A3, and *bounded* in the P3 sense because the resolution is ~±0.03 against 0.097. |
+| **Opportunity, not decisiveness** | positive under [mag, base] but collapsing under the denominator control, or failing the binomial floor | the effect is opportunity — P6a again in a new place — and must be reported as such. |
+
+The positive control is the load-bearing line of the output: the attributed target recomputed
+through the same folds and the same feature set must land on +0.452. If it does not, the join
+is wrong and nothing else in the run is readable.
+
+**Two Step 5 defects are fixed in the same pass, and the fixes are not yet reflected above.**
+P5d's transition control is now built per channel from each slot's own emitted bins instead of
+the gripper's broadcast to all seven, and P5b's sufficiency table now carries
+`energy = Σfeat²/Σtrue²` plus a transition-conditioned copy — the two quantities that decide
+whether the gripper's −0.046 means "inert" or "loud and orthogonal". **Every P5/P5b/P5c/P5d/P6
+number in this document still comes from the old artifact and still stands**; the new run writes
+to `CHANNELS/<suite>_all` precisely so those remain reproducible from their own inputs. Any new
+`_trans` figure is *not* comparable to the tables above — different conditioning — and both the
+npz and `summary.json` carry a `trans_mask` field so the analysis refuses rather than relies on
+a reader noticing.
+
 
 ### Diagnostics ready to run (CPU only, on existing artifacts)
 
