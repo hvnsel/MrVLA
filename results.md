@@ -27,6 +27,14 @@ recurs**, split into two axes:
 - **Net.** "General" and "recurrent-across-models" are two different properties.
   Path A is the finding; Path B is the boundary condition plus a methods
   contribution (a properly-defined causal-recurrence metric).
+- **What breadth turned out to mean (C1/C1a).** Breadth predicts where a feature
+  **writes** — attributed causal mass on a task it was never measured on, beyond
+  what its firing opportunity explains (+0.24 to +0.30 after that control, all
+  four suites). It does **not** predict where a feature **decides** — whether
+  deleting it changes the emitted token — beyond opportunity (≈ 0, sign flips
+  between suites). Same estimator, same folds, same control; only the target
+  differs. That dissociation, measured over 446k decisions per suite, is the
+  sharpest statement the data supports.
 - **Part 2 (below).** A measurement-validity pass over our own results. Path A now
   replicates in all four suites against a zero floor; concentration is quantified;
   the ablation null is bounded rather than absent; the "generality is gripper/phase
@@ -1034,7 +1042,7 @@ is largely firing opportunity (ρ = 0.74–0.86, C1).
 
 ---
 
-## C1. Breadth predicts held-out decisiveness — and that prediction is opportunity
+## C1. Breadth predicts where a feature writes, not where it decides
 
 **What was missing.** A3/P1 is the paper's central claim and it is correlational: breadth on 9
 tasks predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two
@@ -1104,12 +1112,42 @@ relationship does **not** extend to per-decision causal decisiveness once opport
 controlled, and it establishes that at ~446k decisions rather than P3's 200 episodes. P3's
 underpowered null is now bounded from a second direction.
 
-**It is also the third independent convergence on one fact.** P2b: the recurring coalition is the
-always-on features. P4a: breadth is task-set-relative, not feature-intrinsic. C1: ρ(breadth,
-opportunity) = 0.74–0.86, and nothing left after controlling. Three different methods on three
-different statistics, one answer — **what the paper calls breadth is substantially base
-activity.** Whether that is written as a limitation of Path A or as the paper's finding is a
-framing decision, not a section-level one.
+#### C1a. The same control applied to A3 — and it is a dissociation, not a debunking
+
+C1 conditions on the held-out task's firing count and the causal effect vanishes. The obvious
+next question, and for a while the one that decided whether the headline stood: does **A3** survive
+the same control? Same predictor, same controls, same folds, same basis (`hinge5`, because
+`control_design`'s tensor branch is not a true tensor product at three controls) — only the target
+differs.
+
+| target | goal | spatial | object | 10 |
+|---|---|---|---|---|
+| A3, leak-free, 2 controls | +0.566 | +0.512 | +0.434 | +0.586 |
+| **+ opportunity control** | **+0.287** | **+0.303** | **+0.240** | **+0.264** |
+| retained | 0.51 | 0.59 | 0.55 | 0.45 |
+| *C1's causal target, same control* | *0.41* | *−0.49* | *0.01* | *−0.41* |
+
+**A3 survives at about half strength, and the surviving half is consistent**: +0.24 to +0.30 in
+every suite, tightly clustered. The causal target retains nothing — mean ≈ 0 with the sign
+flipping between suites. Two targets, one estimator, opposite outcomes.
+
+**So the finding is a dissociation:**
+
+> Breadth predicts where a feature **writes** — attributed causal mass on a task it was not
+> measured on — beyond what its firing opportunity explains. It does **not** predict where a
+> feature **decides** — whether deleting it changes the emitted token — beyond opportunity.
+
+This is what C1 is for, and it is a sharper claim than either half alone. It also right-sizes the
+convergence with P2b (the recurring coalition is the always-on features) and P4a (breadth is
+task-set-relative): those three results together do **not** show that breadth is merely base
+activity. They show that roughly half of it is, that the half that is not is real and replicates,
+and that the part which fails to transfer is specifically *decisiveness*.
+
+**The limits from C1 carry over unchanged.** The opportunity control is a lower bound by
+construction — breadth partly *is* firing across many tasks — so +0.24 to +0.30 is a floor on the
+non-opportunity component, not an estimate of it. And there is no permutation floor for the
+controlled statistic; what makes the contrast readable is that the same control on the same folds
+gives a consistent positive on one target and a sign-flipping zero on the other.
 
 **One methodological by-product, and it moved the paper's headline.** `run_attribution.py:314`
 computes `base_rate` globally over *all* tasks including the held-out one, so A3's second control
@@ -1338,6 +1376,7 @@ published numbers. **That should be a deliberate decision before publication, no
 | Splitting explains the Path B null | untested, plausible | **falsified in all four suites: every decile rises slower than the random floor** |
 | Rollout ablation tests coded features | assumed | **71.5% of its effect is on decisions the feature never fired on** |
 | Breadth predicts held-out causal *decisiveness* | never tested | **4/4 suites +0.11 to +0.26 over 446k decisions, all floors cleared — but it is opportunity: ≈ 0 once firing count is controlled (C1)** |
+| Is A3 itself just opportunity? | never tested | **no. Survives the same control at ~half strength, +0.24 to +0.30 in all four suites. A dissociation: breadth predicts where a feature WRITES, not where it DECIDES (C1a)** |
 | The gripper's features are inert | claimed from a −0.046 slope | **falsified: feature term is 0.27–1.07× the margin's scale, mostly perpendicular, cosine −0.39 to −0.94 on live decisions (P5b)** |
 | Causal mass is not gripper-weighted | goal only | **holds on goal/spatial/object; libero-10's gripper takes 0.216 vs 0.143 even (P5c)** |
 | `_trans` statistics are comparable across channels | assumed | **were not — the mask was the gripper's, broadcast to all seven. Fixed (P5d)** |
