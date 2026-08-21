@@ -333,6 +333,19 @@ def main() -> None:
         print("[cb]       feature set differs from A3's; nothing below is readable. ***")
     out["positive_control"] = ctrl
 
+    # A3's own control plane, recomputed without the leak. `run_attribution.py` builds base_rate
+    # globally over ALL tasks, so the second control has always carried a little of the held-out
+    # target. The per-(feature, task) firing counts this pass added make the clean per-fold form
+    # computable for the first time. This is the ATTRIBUTED target -- i.e. the paper's headline
+    # number, not the causal one -- so if it moves, A3 moves.
+    br_loto_all = loto_base_rate(D["n_active"], D["n_dec"])
+    ctrl_clean = estimate(C, C, br_loto_all, specs)
+    print("[cb]   same, with base_rate from the training tasks only (no leak):")
+    for spec in specs:
+        a, b = ctrl[spec]["partial"], ctrl_clean[spec]["partial"]
+        print(f"[cb]     {spec:8s} {b:+.4f}   vs {a:+.4f} shipped   delta {b - a:+.4f}")
+    out["positive_control_loto_base_rate"] = ctrl_clean
+
     # --- the primary estimate --------------------------------------------------------------
     prim = estimate(C, R, br, specs, keep_mask=keep)
     sizes = fold_sizes(C, R, br, keep)

@@ -372,6 +372,16 @@ def main() -> None:
                                 suff["t_feat_trans"] / suff["tt_trans"], np.nan)
         suff_energy_tr = np.where(suff["tt_trans"] > 0,
                                   suff["ff_trans"] / suff["tt_trans"], np.nan)
+        # cosine between the feature term and the true margin = slope / sqrt(energy). The
+        # scale-free version of the same statement: slope conflates "how much" with "which
+        # direction", and on a channel where the features are small but systematically opposed
+        # those are different findings. Reported because a slope near zero at cosine -0.4 is
+        # not the same result as a slope near zero at cosine 0.
+        suff_cos = np.where(suff["ff"] > 0, suff["t_feat"] / np.sqrt(suff["tt"] * suff["ff"]),
+                            np.nan)
+        suff_cos_tr = np.where(suff["ff_trans"] > 0,
+                               suff["t_feat_trans"] / np.sqrt(suff["tt_trans"]
+                                                              * suff["ff_trans"]), np.nan)
 
     denom = np.maximum(n_cell, 1)[:, :, None]
     C_abs /= denom
@@ -394,6 +404,8 @@ def main() -> None:
                         sufficiency_recon_trans=suff_recon_tr.astype(np.float32),
                         sufficiency_features_only_trans=suff_feat_tr.astype(np.float32),
                         sufficiency_energy_trans=suff_energy_tr.astype(np.float32),
+                        sufficiency_cosine=suff_cos.astype(np.float32),
+                        sufficiency_cosine_trans=suff_cos_tr.astype(np.float32),
                         sufficiency_n_trans=suff_n_trans,
                         # `flip_{mode}_{key}` stays [F, S], summed over tasks, because
                         # analyze_channels.py indexes it two-dimensionally and every Step 5
@@ -427,6 +439,8 @@ def main() -> None:
                "sufficiency_recon_trans_per_slot": [float(v) for v in suff_recon_tr],
                "sufficiency_features_only_trans_per_slot": [float(v) for v in suff_feat_tr],
                "sufficiency_energy_trans_per_slot": [float(v) for v in suff_energy_tr],
+               "sufficiency_cosine_per_slot": [float(v) for v in suff_cos],
+               "sufficiency_cosine_trans_per_slot": [float(v) for v in suff_cos_tr],
                "sufficiency_n_trans_per_slot": suff_n_trans.tolist(),
                "modes": modes}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
@@ -444,12 +458,12 @@ def main() -> None:
             flag += ("   <- NO ADDITIVE COMPONENT DETECTED (see energy before reading further)")
         print(f"[chan]   {names[s_i]:8s} recon={suff_recon[s_i]:.4f}  "
               f"features_only={suff_feat[s_i]:.4f}  energy={suff_energy[s_i]:.4f}  "
-              f"n={suff_n[s_i]}{flag}")
+              f"cos={suff_cos[s_i]:+.4f}  n={suff_n[s_i]}{flag}")
     print("[chan] restricted to decisions where THIS channel's own emitted bin changed:")
     for s_i in range(S_SLOTS):
         print(f"[chan]   {names[s_i]:8s} recon={suff_recon_tr[s_i]:.4f}  "
               f"features_only={suff_feat_tr[s_i]:.4f}  energy={suff_energy_tr[s_i]:.4f}  "
-              f"n={suff_n_trans[s_i]}")
+              f"cos={suff_cos_tr[s_i]:+.4f}  n={suff_n_trans[s_i]}")
     # WHAT A NEAR-ZERO features_only DOES AND DOES NOT LICENCE.
     #
     # It is a FAILURE TO DETECT an additive feature component along the margin, not evidence
