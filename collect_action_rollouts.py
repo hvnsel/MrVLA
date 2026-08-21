@@ -14,14 +14,18 @@ the existing SAE / attribution / readout code applies unchanged.
 Validate on one task first -- this cannot be unit-tested without the model and simulator:
 
     python collect_action_rollouts.py --model openvla/openvla-7b-finetuned-libero-goal \\
-        --task-suite libero_goal --unnorm-key libero_goal \\
+        --task-suite libero_goal --unnorm-key libero_goal --no-flash-attn \\
         --max-tasks 1 --trials-per-task 2 --out /tmp/rollout_smoke
 
 Full run (50 init states x 10 tasks = 500 episodes, ~5 GB):
 
     python collect_action_rollouts.py --model openvla/openvla-7b-finetuned-libero-goal \\
-        --task-suite libero_goal --unnorm-key libero_goal \\
+        --task-suite libero_goal --unnorm-key libero_goal --no-flash-attn \\
         --trials-per-task 50 --out $BASE/ROLLOUT_ACTION/goal
+
+`--no-flash-attn` is not optional on the Delta env: flash_attn is not installed there, and
+`load_openvla` defaults it ON, so omitting the flag fails at model load. Every other slurm
+script in this repo passes it for the same reason.
 """
 
 from __future__ import annotations
@@ -58,7 +62,8 @@ def main() -> None:
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--worker-id", type=int, default=0)
     p.add_argument("--n-workers", type=int, default=1)
-    p.add_argument("--no-flash-attn", action="store_true")
+    p.add_argument("--no-flash-attn", action="store_true",
+                   help="required on Delta: flash_attn is not in the env")
     args = p.parse_args()
 
     device = args.device if torch.cuda.is_available() else "cpu"
