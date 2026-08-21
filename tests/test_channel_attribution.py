@@ -242,6 +242,49 @@ def test_task_axis_sums_to_the_legacy_slot_marginal():
     assert gt.sum(axis=1).shape == (F, S)
 
 
+def test_energy_and_cosine_separate_inert_features_from_loud_misaligned_ones():
+    """WHY the sufficiency table needs three columns, not one.
+
+    `features_only` is a through-origin projection sum(true*feat)/sum(true^2). It goes to zero
+    two ways that mean opposite things: the feature term is absent, or it is large and points
+    across the margin. results.md P5b reported -0.046 for the gripper and could not tell those
+    apart -- which is exactly why it could not support the claim it made.
+
+    energy = sum(feat^2)/sum(true^2) gives the magnitude, cos = slope/sqrt(energy) gives the
+    direction. Two planted channels with the SAME near-zero slope must come apart on both.
+    """
+    rng = np.random.default_rng(31)
+    n = 4000
+    true = rng.standard_normal(n)
+
+    feat_inert = rng.standard_normal(n) * 0.02            # tiny, and unrelated
+    # large, and constructed orthogonal to `true` so the projection vanishes by construction
+    raw = rng.standard_normal(n)
+    feat_loud = raw - true * (raw @ true) / (true @ true)
+
+    def decomp(feat):
+        tt, tf, ff = (true * true).sum(), (true * feat).sum(), (feat * feat).sum()
+        return tf / tt, ff / tt, tf / np.sqrt(tt * ff)
+
+    slope_i, energy_i, cos_i = decomp(feat_inert)
+    slope_l, energy_l, cos_l = decomp(feat_loud)
+
+    assert abs(slope_i) < 0.02 and abs(slope_l) < 1e-10, (slope_i, slope_l)
+    assert energy_i < 0.01, energy_i
+    assert energy_l > 0.5, energy_l
+    assert energy_l > 50 * energy_i, "energy must separate what the slope cannot"
+
+    # a third case the slope also hides: small in magnitude but systematically OPPOSED, which
+    # is what all four suites show for the gripper. Its slope is near zero like the inert case;
+    # only the cosine says it is not.
+    feat_opp = -true * 0.2 + rng.standard_normal(n) * 0.4
+    slope_o, energy_o, cos_o = decomp(feat_opp)
+    assert energy_o < 0.3, energy_o
+    assert cos_o < -0.3, f"the opposed case must show a clearly negative cosine, got {cos_o:+.3f}"
+    assert abs(cos_i) < 0.15, f"the inert case must sit near zero cosine, got {cos_i:+.3f}"
+    assert abs(cos_l) < 1e-9, cos_l
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):

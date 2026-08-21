@@ -732,7 +732,7 @@ involve.
 > to-do**: a shared additive offset of ~+0.08 would leave five channels at ≈0 and two at ≈+0.08,
 > which is the same conclusion in cleaner form. It cannot overturn anything.
 
-### P5c. Path A's causal mass is NOT gripper-weighted (a confound closed)
+### P5c. Path A's causal mass is not gripper-weighted on three of four suites
 
 `mrvla/channels.py` warns that the gripper is near-binary, emits extreme bins, and therefore
 carries the largest `||u_contrast||` — so every feature's |phi| should be inflated at slot 6 for
@@ -742,19 +742,33 @@ disproportionate mass then `C[task, feature]` — and with it Path A, and Steps 
 substantially a GRIPPER measurement rather than a general one.
 
 Read off the saved `C_slot_abs` (no rerun; the split is also printed by
-`run_channel_attribution.py:350`):
+`run_channel_attribution.py`). An even split is 1/7 = 0.1429:
 
-| dx | dy | dz | droll | dpitch | dyaw | gripper |
-|---|---|---|---|---|---|---|
-| 0.1353 | 0.1331 | 0.1377 | 0.1503 | 0.1453 | 0.1446 | **0.1537** |
-| 0.95x | 0.93x | 0.96x | 1.05x | 1.02x | 1.01x | **1.08x** |
+| suite | dx | dy | dz | droll | dpitch | dyaw | gripper | gripper vs even |
+|---|---|---|---|---|---|---|---|---|
+| goal | 0.1353 | 0.1331 | 0.1377 | 0.1503 | 0.1453 | 0.1446 | 0.1537 | 1.08x |
+| spatial | 0.1436 | 0.1432 | 0.1447 | 0.1362 | 0.1499 | 0.1440 | 0.1384 | 0.97x |
+| object | 0.1176 | 0.1415 | 0.1444 | 0.1553 | 0.1464 | 0.1589 | 0.1359 | 0.95x |
+| **10** | 0.1223 | 0.1299 | 0.1155 | 0.1240 | 0.1513 | 0.1408 | **0.2162** | **1.51x** |
 
-An even split is 1/7 = 0.1429. **The observed range is 0.93x to 1.08x, and the gripper is 1.08x.**
-Causal mass is divided almost perfectly evenly across the seven action dimensions, so Path A is
-not gripper-weighted and the confound is closed.
+**On three suites the confound is closed.** goal 0.93–1.08x, spatial 0.95–1.05x, object
+0.82–1.11x — causal mass divided close to evenly across the seven action dimensions, so Path A is
+not a gripper measurement in disguise.
 
-*This also undercuts the premise of the share correction.* If the geometric inflation were
-biting, the gripper's absolute share would sit well above 1/7. It does not. Either the effect is
+**libero-10 is a genuine exception and the section previously missed it**, because the check was
+run on goal only. There the gripper takes **0.216**, half again the even share and 1.4x the next
+largest channel (dpitch, 0.151), while the three translation channels sit at 0.116–0.130. So on
+libero-10 the pooled `C[task, feature]` *is* weighted toward gripper decisions, and any
+libero-10-specific conclusion drawn from it inherits that. This belongs with the standing
+libero-10 anomaly (P2, `n_eff` = 9.6 against 15.9–19.4 elsewhere) rather than being a separate
+problem: the same suite is the outlier on both measures, which is at least consistent with one
+underlying cause. P5b's table shows the same suite is also the one where the gripper's feature
+term reaches the margin's own scale.
+
+*On the three clean suites this also undercuts the premise of the share correction.* If the
+geometric inflation were biting, the gripper's absolute share would sit well above 1/7. It does
+not — except on libero-10, where it does, and where the correction may therefore be doing real
+work rather than none. Either the effect is
 far smaller than the docstring assumes, or it is offset elsewhere in phi — fewer active features
 at gripper decisions, or a larger residual norm `r`, both of which sit in the denominator. The
 practical consequence is reassuring rather than alarming: absolute and share analyses should
@@ -764,12 +778,13 @@ non-issue throughout and the correction is harmless rather than load-bearing.
 
 ---
 
-### P5d. The transition control is gripper-defined, and the share correction is inert
+### P5d. The transition control was gripper-defined (fixed), and the share correction is inert
 
-Two objections to how the channel analysis treats the gripper. One is a real defect.
+Two objections to how the channel analysis treats the gripper. One was a real defect; it has been
+fixed and the fix mattered more than the diagnosis suggested.
 
-**The transition control is built from the gripper's tokens and broadcast to every channel.**
-`run_channel_attribution.py:236-238`:
+**The transition control was built from the gripper's tokens and broadcast to every channel.**
+The old code:
 
 ```
 grip      = tok_rows.reshape(n, n_sl)[:, args.gripper_slot]
@@ -777,13 +792,29 @@ trans_dec = transition_mask(grip, ep_of, ts_of)
 trans     = np.repeat(trans_dec, n_sl)          # broadcast to ALL seven slots
 ```
 
-So `flip_trans` for dx means *"dx flipped at a timestep where the GRIPPER changed"*, which
-controls for nothing — dx changes on ~95% of steps regardless. **The `_trans` family is not
-comparable across channels**, and any table mixing gripper `_trans` with dx `_trans` compares two
-different conditionings. The fix is a per-channel mask built from each channel's own emitted
-bins, which needs a rerun of the GPU pass. Until then, do not report `_trans` comparisons across
-channels — and note that "swap in `flip_active_trans`" would fix the gripper figure while
-breaking its six comparators.
+So `flip_trans` for dx meant *"dx flipped at a timestep where the GRIPPER changed"*, which
+controls for nothing — dx changes on most steps regardless. Now replaced by
+`per_channel_transition`, which builds one mask per slot from that slot's own emitted bins.
+`--gripper-slot` is labelling only.
+
+**The size of the error, measured (goal):**
+
+| | dx | dy | dz | droll | dpitch | dyaw | gripper |
+|---|---|---|---|---|---|---|---|
+| own transitions | 42402 | 42426 | 48659 | 38073 | 46070 | 38216 | 3255 |
+| old (gripper broadcast) | 3255 | 3255 | 3255 | 3255 | 3255 | 3255 | 3255 |
+
+The six motion channels' transition statistics were computed on 3255 decisions instead of their
+own 38k–49k, and on almost entirely the wrong ones — the gripper moves on ~5% of timesteps, so
+the old mask selected a small, atypical slice for every channel but the gripper. The gripper's
+own figures were correct throughout and are unchanged by the fix, which is the only reason P5b's
+earlier numbers were salvageable at all.
+
+**Old and new `_trans` figures are not comparable**, and nothing in a filename says so. Both the
+npz and `summary.json` now carry `trans_mask`; `causal_breadth.py` refuses to report
+transition-conditioned results unless it reads `per_channel`. Runs under `CHANNELS/<suite>` are
+the old conditioning, `CHANNELS/<suite>_all` the new — the new pass writes to a separate
+directory precisely so P5, P5b, P5c, P6 and P6a stay reproducible from their own inputs.
 
 **The share normalisation is applied uniformly, and on this data it corrects nothing.** Measured
 per channel: 0/7 sign disagreements, largest absolute-vs-share delta 0.013. Simulated at the
@@ -809,11 +840,12 @@ Effective number of action dimensions a feature drives: **3.21 of 7** (p10 1.33,
 it correlates with task breadth at only **+0.238**. Two largely independent axes — the quadrant
 map §3.3 wanted, built from data already collected.
 
-### P5b. The gripper is a default, not a decision
+### P5b. The gripper's margin is carried by the constant, and its feature term points sideways
 
 The action margin decomposes exactly at frozen r as `true = features + bias + error`, where
 *features* is `l2·Σ z_j w_j` (different every decision) and *bias* is `μ·1 + b_pre` (the same
-constant at every decision). Reporting all four columns rather than two makes the result legible:
+constant at every decision). Reporting all four columns rather than two makes the result legible
+(goal, all decisions):
 
 | channel | features | bias | = recon | error |
 |---|---|---|---|---|
@@ -832,62 +864,94 @@ exactly. `dpitch` is the mirror image at −0.003: its features do all the work.
 
 **Mechanically**, this follows from the gripper token being unchanged on ~95% of timesteps. Its
 margin is large and near-constant; a constant explains a constant, and a term that varies every
-decision has nothing left to explain. You cannot explain something that does not change with
-something that does. Compare dx, whose margin swings every step, so the constant captures only
-the mean and the features do the varying work.
+decision has nothing left to explain. Compare dx, whose margin swings every step, so the constant
+captures only the mean and the features do the varying work.
 
 This puts a name on §2.6's *"constant default-action bias = 0.405"* — it is largely the gripper.
 
-**This does not contradict P5c**, and the apparent tension is worth stating explicitly because it
-reads like one. The gripper carries an entirely normal share of causal MASS (0.1537, 1.08x even),
-yet contributes nothing to the MARGIN. Those are different objects: causal mass is `sum |phi|`
-with the sign discarded, while the margin term is the SIGNED sum `|sum phi|`. A set of features
-pushing +0.4, −0.3, +0.5, −0.6 carries 1.8 of mass and delivers 0.0 to the answer. At the gripper
-the features are active and carrying magnitude; their signed contributions simply cancel, and the
-constant carries the answer instead.
+#### What the −0.046 does and does not mean (resolved)
 
-Path A and Steps 1–4 are built on causal mass. This table is built on the signed margin. They can
-say different things about the same channel without either being wrong.
+An earlier version of this section titled it *"the gripper is a default, not a decision"* and
+flagged three things that would have to be measured before that claim was supportable: the
+missing `Σfeat²` term, a transition-conditioned control, and the direction as distinct from the
+magnitude. All three now exist (`--all-features --coeff coded`, per-channel transition mask), and
+they do **not** support the original title.
 
-> **Three caveats, none of which are worth running down.**
+`features_only` is a projection, `Σ(true·feat)/Σ(true²)`. Add `energy = Σfeat²/Σtrue²` and the
+two are enough to recover the whole geometry: the feature term's size relative to the margin is
+`√energy`, its direction is `cos = slope/√energy`, and its component *across* the margin is
+`√(energy − slope²)`. Restricted to the decisions where each channel's own emitted bin changed:
+
+| suite | slope | energy | ‖feat‖/‖true‖ | **cos** | ⊥ component | n |
+|---|---|---|---|---|---|---|
+| goal | −0.114 | 0.071 | 0.27 | **−0.430** | 0.24 | 3255 |
+| spatial | −0.116 | 0.089 | 0.30 | **−0.388** | 0.28 | 3679 |
+| object | −0.158 | 0.150 | 0.39 | **−0.409** | 0.35 | 3827 |
+| **10** | **−0.999** | **1.135** | **1.07** | **−0.937** | 0.37 | 6354 |
+| *dx, goal, for scale* | *0.727* | *0.655* | *0.81* | *+0.899* | *0.36* | *42402* |
+
+**Three things follow, and the original claim is not one of them.**
+
+**1. The feature term is not inert.** Even at its smallest it is a quarter of the margin's scale,
+against dx's four-fifths — a factor of three, not the factor of 20000 that a genuinely absent
+term would show. On libero-10 it *equals* the margin's own scale.
+
+**2. Most of it is perpendicular.** The ⊥ column is 0.24–0.37 against aligned components of
+0.05–0.16. At gripper decisions the features write substantial structure that the margin simply
+does not see. This is the part the slope could never have shown, and it is not fixed by the
+decomposition being an identity (see the caveat below).
+
+**3. Restricted to live decisions the direction is consistently negative.** Pooled over all
+decisions the cosine is near zero on two suites (+0.06 spatial, −0.02 object) and −0.22 on goal.
+Condition on the ~5% of decisions where the gripper actually moves and all four line up at
+**−0.39 to −0.94**, each 24–75 standard errors from zero. Four independent suites agreeing on the
+sign is not noise, and the pooled figure was hiding it — exactly what the transition control was
+added to test.
+
+**libero-10 settles it outright.** Feature energy 1.14× the margin's at cosine −0.94: the
+features are as large as the whole margin and point almost exactly opposite. No reading of that
+is "the features are absent".
+
+So the claim is *the constant carries the gripper's margin, and the feature term is a real vector
+of roughly a quarter to one times its scale, mostly orthogonal to it and, on live decisions,
+consistently opposed.* That is narrower and more specific than "a default".
+
+> **The identity caveat, stated because it limits half of the above.** The decomposition is
+> exact, so `features = true − bias − error`. Any statement about the feature term's component
+> *along* the margin is the same arithmetic as a statement about the bias overshooting, viewed
+> from the other side — points 1 and 3 above inherit that, and "the features oppose the token"
+> and "the constant over-explains it and the features are the correction" are two descriptions of
+> one fact, not two findings. **Point 2 is not affected**: the perpendicular component is not
+> determined by the bias at all, and it is the one genuinely independent addition.
 >
 > *The metric is a calibration slope, not R².* `Σ(true·pred)/Σ(true²)` asks whether the
 > reconstruction tracks the margin at the right SCALE on average; it does not penalise scatter,
-> so a noisy but unbiased reconstruction scores 1. This is the same statistic A1 used for the
-> 0.936 gate and it is applied identically to all seven channels, so the comparison is fair — but
-> "0.94" means "tracks at 94% of size", not "explains 94% of variance".
+> so a noisy but unbiased reconstruction scores 1. Same statistic as A1's 0.936 gate, applied
+> identically to all seven channels, so the comparison is fair — but "0.94" means "tracks at 94%
+> of size", not "explains 94% of variance".
 >
 > *Partly tautological on a near-binary channel.* Both the true margin and the bias term are
 > functions of the emitted token, so a high `recon` slope for the gripper is expected by
-> construction.
+> construction. This applies to `recon`, not to `energy` or `cos`.
 >
-> *A projection of zero cannot distinguish "nothing there" from "plenty there, pointing
-> sideways".* The statistic accumulates `sum(true*feat)` and `sum(true^2)` but never
-> `sum(feat^2)`, and that missing term is the one that separates the two. Simulated: features
-> that are genuinely inert and features that are loud but misaligned both return a slope of
-> ~0.00 while their energies differ by a factor of ~20000. There are also two flavours of
-> cancellation the number cannot tell apart — WITHIN a decision (`sum_j phi_j` ~ 0 because
-> features oppose each other) and ACROSS decisions (`sum_j phi_j` is large but its sign relative
-> to the margin flips). P5c establishes that individual |phi_j| are substantial at gripper
-> decisions (1.08x even mass), so at least some within-decision cancellation is occurring, but
-> the per-decision NET is not recorded anywhere.
+> *Transition n is small.* 3255–6354 decisions against 62k–138k pooled. The cosines are 24–75 se
+> from zero individually, so the estimates are not fragile, but they rest on the 5% of the data
+> where the gripper moves.
 >
-> **Therefore state the claim as "the features' net contribution does not align with the emitted
-> margin", and not as "features do not drive the gripper".** The stronger reading is not
-> supported. Adding a `sum(feat^2)` accumulator per slot would settle it in two lines, in the
-> same GPU pass the per-channel transition mask already requires: near zero earns the strong
-> claim, large means the features are doing something orthogonal to the margin and "the gripper
-> is a default" is the wrong description of it.
->
-> *No transition-conditioned control exists for this table.* `suff` is indexed by slot only
-> (`run_channel_attribution.py:225`), so the figures cover ALL decisions including the ~95% where
-> the gripper is not moving. The `_trans` variants exist for the flip counters, not for
-> sufficiency. **Whether features explain the gripper AT TRANSITIONS is untested**, and an earlier
-> version of this section wrongly claimed the transition figures were the control for it.
->
-> The necessity comparison is dropped rather than caveated: it quoted `flip_active`, counted over
-> all gripper decisions, and its `_trans` alternative is conditioned on the gripper's own clock
-> broadcast to every channel (P5d), so neither variant supports a cross-channel table.
+> *Still not recorded: the per-decision net.* `Σ_j φ_j` per decision is accumulated into the
+> slot totals, never saved, so within-decision cancellation (features opposing each other at one
+> decision) cannot be separated from across-decision sign flips. `energy` bounds how much total
+> cancellation there is; it does not say which kind.
+
+**This does not contradict P5c**, and the apparent tension is worth stating because it reads like
+one. The gripper carries a normal share of causal MASS on three suites, yet contributes little
+along the MARGIN. Different objects: causal mass is `Σ|φ|` with the sign discarded, the margin
+term is the SIGNED `|Σφ|`. Features pushing +0.4, −0.3, +0.5, −0.6 carry 1.8 of mass and deliver
+0.0 to the answer. The `energy`/`cos` split above is the quantitative version of exactly this:
+real magnitude, little of it along the margin.
+
+Path A and Steps 1–4 are built on causal mass. This table is built on the signed margin. They can
+say different things about the same channel without either being wrong.
 
 ---
 
@@ -929,6 +993,101 @@ decisive per firing. Note this is not straightforwardly a failure: `adjusted_bre
 residualised on magnitude by construction, so it was never meant to predict per-decision
 strength — it claims *breadth* of influence, which is a scope claim and is not what this table
 measures. The specialist end being genuinely *less* decisive is the informative half.
+
+**That defence names an untested claim, and C1 has now tested it.** The scope version — does
+breadth computed on nine tasks predict per-decision decisiveness on the tenth — runs on all four
+suites over 446k decisions and comes back positive (+0.107 to +0.260, 40/40 folds) but does not
+survive controlling for how often the feature fires on the held-out task. So the defence was
+right about what this table measures and wrong to imply the scope version would rescue it.
+Both statistics now point the same way, for the same underlying reason: breadth as operationalised
+is largely firing opportunity (ρ = 0.74–0.86, C1).
+
+---
+
+## C1. Breadth predicts held-out decisiveness — and that prediction is opportunity
+
+**What was missing.** A3/P1 is the paper's central claim and it is correlational: breadth on 9
+tasks predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two
+Phase-2 results left it exposed. P3 shows the rollout ablation cannot test it causally at any
+feasible scale (MDE 9.7 points pooled, 18 per task *at the ceiling*, LIBERO caps at 50 initial
+states). P6a shows general ≈ random on the *pooled* per-firing flip rate — average strength, not
+scope, as that section correctly notes.
+
+**The experiment.** Identical predictor, controls, folds and curvature-corrected basis ladder;
+only the target changes, from attributed mass `C[g, j]` to the exact readout counterfactual flip
+rate on the held-out task (`causal_breadth.py`). ~446k decisions of power per suite instead of
+200 episodes. Three design choices, each pinned by a test in `tests/test_causal_breadth.py`:
+**all 2048 features** (the ~396 candidates are the two extremes of the predictor under test, and
+extreme-group sampling inflates |r| by construction); **coded semantics only** (P6: projection
+strips a subspace, and 71.5% of its flips land where the feature wrote nothing); and a **third
+floor** for the fact that the target is a ratio — under a null where every feature is equally
+decisive, small-denominator cells pile up at exact zero while large ones sit near p̄, so rank(y)
+tracks the denominator, which tracks base rate, which tracks breadth.
+
+**The positive control is the load-bearing line.** The attributed target recomputed through the
+same folds, same feature set, same code path: **+0.4516 / +0.4036 / +0.3624 / +0.4725** against
+published +0.452 / +0.404 / +0.362 / +0.473. The join and the estimator are right, so everything
+below is readable.
+
+| | goal | spatial | object | 10 |
+|---|---|---|---|---|
+| **partial (tensor4)** | **+0.260** | **+0.107** | **+0.127** | **+0.128** |
+| partial (linear) | +0.326 | +0.134 | +0.185 | +0.228 |
+| folds positive | 10/10 | 10/10 | 10/10 | 10/10 |
+| floors, min z | +30.5 | +13.1 | +16.2 | +15.2 |
+| ρ(PR_tr, N_held) | +0.814 | +0.797 | +0.742 | +0.859 |
+| **+ n_active_held control** | **+0.106** | **−0.054** | **+0.001** | **−0.048** |
+| transitions only | +0.288 | +0.169 | +0.139 | +0.185 |
+| without the gripper slot | +0.302 | +0.186 | +0.160 | +0.145 |
+| self-contained (flip→flip) | +0.228 | +0.194 | +0.116 | +0.176 |
+| ρ(PR_C, PR_flip) | +0.765 | +0.794 | +0.761 | +0.798 |
+
+**The relationship is real.** Positive on every suite, 40/40 folds, clearing all three
+permutation floors at z = 13–36 — including the binomial denominator floor, so the ratio-artefact
+explanation is dead. This is not a weak measurement: floor sd is 0.008, giving a resolution of
+about ±0.016, against the rollout ablation's 0.097 pooled and 0.18 per task.
+
+**It is opportunity.** Condition additionally on how often the feature fires on the held-out task
+and it disappears: +0.106, −0.054, +0.001, −0.048 — mean ≈ 0, and the sign is inconsistent.
+Breadth as operationalised is 74–86% rank-identical to firing opportunity, and once that is
+removed nothing survives. This is the third of three pre-registered outcomes, called before any
+number was seen.
+
+**Two caveats the data closed** — both were planned for and neither materialised. The min-active
+ladder is flat with **20480/20480** cells kept up to a threshold of 100 (median denominator
+1173–1810, p10 496–768), so there is no small-cell problem and no threshold selection effect to
+argue about. And the result is not carried by the gripper: dropping slot 6 *raises* the partial
+on all four suites.
+
+**Two limits that remain.** (a) The permutation floors are for the *uncontrolled* statistic;
+there is no floor for the controlled one, so "≈ zero" rests on the sign being inconsistent across
+four suites, not on a z. (b) The `n_active_held` control is a lower bound by construction —
+breadth partly *is* firing across many tasks, so conditioning on opportunity in the held-out task
+removes part of the mechanism by which breadth would transfer. Neither rescues the result; both
+belong in the text. Separately, the flip counterfactual is a direct-effect lower bound on the
+readout: it freezes r and the rest of the sequence, so a flip means "this feature decides this
+token", never "this feature determines behaviour".
+
+**What this does and does not touch.** A3 is unaffected — it is a claim about attributed mass and
+it replicates on all four suites through this very code path. What C1 establishes is that the
+relationship does **not** extend to per-decision causal decisiveness once opportunity is
+controlled, and it establishes that at ~446k decisions rather than P3's 200 episodes. P3's
+underpowered null is now bounded from a second direction.
+
+**It is also the third independent convergence on one fact.** P2b: the recurring coalition is the
+always-on features. P4a: breadth is task-set-relative, not feature-intrinsic. C1: ρ(breadth,
+opportunity) = 0.74–0.86, and nothing left after controlling. Three different methods on three
+different statistics, one answer — **what the paper calls breadth is substantially base
+activity.** Whether that is written as a limitation of Path A or as the paper's finding is a
+framing decision, not a section-level one.
+
+**One methodological by-product, and it points at the headline.** `run_attribution.py` computes
+`base_rate` globally over *all* tasks including the held-out one, so A3's second control has
+always carried a little of the target. The per-(feature, task) firing counts this pass added make
+the clean per-fold form computable for the first time, and it raises the causal partial on all
+four suites (+0.26→+0.31, +0.107→+0.165, +0.127→+0.153, +0.128→+0.181). Whether the same uplift
+applies to A3's own numbers is computed by `causal_breadth.py`'s positive-control block and is
+**not yet filled in here**.
 
 ---
 
@@ -1081,6 +1240,10 @@ published numbers. **That should be a deliberate decision before publication, no
 | Recurrence ≠ generality (role level) | not tested | **holds: −0.54 to −0.81, survives coalition matching** |
 | Splitting explains the Path B null | untested, plausible | **falsified in all four suites: every decile rises slower than the random floor** |
 | Rollout ablation tests coded features | assumed | **71.5% of its effect is on decisions the feature never fired on** |
+| Breadth predicts held-out causal *decisiveness* | never tested | **4/4 suites +0.11 to +0.26 over 446k decisions, all floors cleared — but it is opportunity: ≈ 0 once firing count is controlled (C1)** |
+| The gripper's features are inert | claimed from a −0.046 slope | **falsified: feature term is 0.27–1.07× the margin's scale, mostly perpendicular, cosine −0.39 to −0.94 on live decisions (P5b)** |
+| Causal mass is not gripper-weighted | goal only | **holds on goal/spatial/object; libero-10's gripper takes 0.216 vs 0.143 even (P5c)** |
+| `_trans` statistics are comparable across channels | assumed | **were not — the mask was the gripper's, broadcast to all seven. Fixed (P5d)** |
 
 ---
 
@@ -1092,12 +1255,22 @@ published numbers. **That should be a deliberate decision before publication, no
   damages *many* tasks (high damage participation ratio); specialist removal
   damages *few*. Pending GPU allocation.
 - **Four-suite Path A partial|both table** — fill in A5 with the per-suite numbers.
+- **The `base_rate` leak, and whether A3 moves** (C1). `run_attribution.py:314` computes
+  the base-rate control globally over all tasks including the held-out one. The clean
+  per-fold form raises C1's causal partial on all four suites (+0.03 to +0.06);
+  `causal_breadth.py`'s positive-control block now computes the same comparison for the
+  ATTRIBUTED target, i.e. for A3's own headline numbers. Needs one CPU re-run per suite
+  and could move the paper's central figure upward. This is a leak fixed, not a caveat
+  added — the same shape as P1b's curvature correction.
 ### Blocking — asymmetries a reviewer will see
 
-- **B1 is goal-only.** Path A replicates 4/4 (P1) and the A4 m-sweep now does too
-  (P7a-bis), but P5's channel result rests on goal alone. Three GPU jobs
-  (`run_channels.slurm spatial|object|10`). Lower priority than it looks: B1 is a
-  negative result, so a single-suite negative is a weaker claim but also a smaller one.
+- **B1 is goal-only — partly closed.** The channel pass now exists for all four suites
+  under `CHANNELS/<suite>_all`, and P5b, P5c and C1 are four-suite results. P5's own
+  headline (generality is not channel-localised, partial +0.069) and P6/P6a still rest
+  on goal alone, because those were computed on the *candidate* feature set with
+  `--coeff both` and the new runs are all-features, coded-only. Re-running
+  `analyze_channels.py` against `CHANNELS/<suite>_all` would extend P5 and P6a to four
+  suites for free — CPU, minutes, artifacts already on disk.
 - **Second-seed SAEs for spatial / object / libero-10.** Without them the three new
   A4 targets report slopes but no chance-corrected retention, so "recurrence retains
   ~a quarter" is a goal-only number even though the slope conclusion is four-suite.
@@ -1116,6 +1289,11 @@ published numbers. **That should be a deliberate decision before publication, no
   population-level behaviour is what every published claim rests on. Fixing it moves
   numbers, so it is a deliberate pre-publication call, not a bug to patch in passing.
 - **libero-10's `n_eff` = 9.6** (P2) — extreme, control says real, wants an eyeball.
+  Now joined by two more libero-10 outliers pointing the same way: its gripper takes
+  0.216 of causal mass against 0.143 even (P5c), and its gripper feature term reaches
+  1.14x the margin's own energy at cosine −0.94 where the other three sit at 0.07–0.15
+  (P5b). Three measures, one suite. Worth one look at whether libero-10's action
+  distribution differs from the others rather than three separate footnotes.
 - **The sliced-Wasserstein anomaly** (P7b) — random dictionaries sit closer to goal's
   signature distribution than any real model does. Unexplained.
 - **Signature-entropy control** for B2/explanation #4. `inventory_recurrence.py`
@@ -1136,61 +1314,6 @@ published numbers. **That should be a deliberate decision before publication, no
   estimate: `q_cross` recomputed on disjoint halves of the probe frames. See the
   diagnostics note.
 
-### C1. Causal breadth — built and pre-registered, not yet run
-
-**The gap.** A3/P1 is the paper's central claim and it is correlational: breadth on 9 tasks
-predicts *attributed* importance on the 10th (+0.452 goal, curvature-corrected). Two Phase-2
-results leave it exposed. P3 shows the rollout ablation cannot test it causally at any feasible
-scale (MDE 9.7 points pooled, 18 per task *at the ceiling*, and LIBERO caps at 50 initial
-states). P6a is well-powered and shows general ≈ random on the *pooled* per-firing flip rate —
-but pooled flip rate is average strength, and breadth after residualisation on magnitude is a
-claim about **scope**. The scope version has never been run.
-
-**The experiment.** Same predictor, same controls, same folds, same curvature-corrected basis
-ladder; the target becomes the readout counterfactual flip rate on the held-out task. That is a
-causal quantity carrying ~446k decisions of power rather than 200 episodes. Implemented in
-`causal_breadth.py`; the GPU pass it needs is `sbatch run_channels.slurm <suite> all`.
-
-Three design decisions, each with a test pinning it:
-
-* **All 2048 features, not `pick_candidates`' ~396.** Those are the two extremes of the very
-  predictor under test, and extreme-group sampling inflates |r| by construction
-  (`test_selecting_on_the_predictor_inflates_the_correlation` measures how much). This cannot
-  be approximated by raising `--top`: past the eligible count `select_general_specialist`
-  returns the same set for both ends and the contrast stops being a contrast.
-* **Coded semantics only.** P6 established that projection strips a subspace rather than a
-  feature and that 71.5% of its flips land where the feature wrote nothing.
-* **A third floor.** The target is a **ratio**, and a ratio can manufacture a positive partial
-  out of denominator structure alone: under a null where every feature is equally decisive,
-  small-denominator cells pile up at an exact zero while large ones sit near p̄, so rank(y)
-  tracks the denominator — which tracks base rate, which tracks breadth. Neither the mechanical
-  nor the estimator floor detects this. `binomial_denominator_null` redraws the target as
-  Binomial(N, p̄) keeping every denominator exactly, and is the floor this design turns on.
-
-**Pre-registered reading**, fixed before any number is seen:
-
-| outcome | condition | what it means |
-|---|---|---|
-| **Causal** | partial ≥ +0.15, ≥9/10 folds positive, z > 5 on both the mechanical and the binomial floor, ≥60% retained under the denominator control | breadth is a scope property that transfers *causally*, not only attributionally. Retires P3's underpowered null and answers P6a with the measurement P6a did not make. |
-| **Bounded null** | \|partial\| < 0.05 with all floors at zero | attributed mass transfers; per-decision decisiveness does not. Breadth says where a feature **writes**, not where it **decides** — a real narrowing of A3, and *bounded* in the P3 sense because the resolution is ~±0.03 against 0.097. |
-| **Opportunity, not decisiveness** | positive under [mag, base] but collapsing under the denominator control, or failing the binomial floor | the effect is opportunity — P6a again in a new place — and must be reported as such. |
-
-The positive control is the load-bearing line of the output: the attributed target recomputed
-through the same folds and the same feature set must land on +0.452. If it does not, the join
-is wrong and nothing else in the run is readable.
-
-**Two Step 5 defects are fixed in the same pass, and the fixes are not yet reflected above.**
-P5d's transition control is now built per channel from each slot's own emitted bins instead of
-the gripper's broadcast to all seven, and P5b's sufficiency table now carries
-`energy = Σfeat²/Σtrue²` plus a transition-conditioned copy — the two quantities that decide
-whether the gripper's −0.046 means "inert" or "loud and orthogonal". **Every P5/P5b/P5c/P5d/P6
-number in this document still comes from the old artifact and still stands**; the new run writes
-to `CHANNELS/<suite>_all` precisely so those remain reproducible from their own inputs. Any new
-`_trans` figure is *not* comparable to the tables above — different conditioning — and both the
-npz and `summary.json` carry a `trans_mask` field so the analysis refuses rather than relies on
-a reader noticing.
-
-
 ### Diagnostics ready to run (CPU only, on existing artifacts)
 
 `BASE=... ./run_diagnostics.sh` — see `notes/elevation_diagnostics.md` for what each
@@ -1203,6 +1326,7 @@ one is for and what it converts. In short:
 | `causal_concentration.py` | §A6 claims "concentration and reproducibility of influence" with no number attached. Adds effective feature count, Lorenz/Gini shares, and cross-task top-N overlap vs chance, each against a firing-rate control. |
 | `reliability_ceiling.py` | Attenuation correction. Strengthens Path A to a floor of ≥ +0.581 at reliability 0.72; shows the A×B null needs a recurrence-reliability estimate (r_yy > 0.249 suffices) before it can be claimed. |
 | `split_half_breadth.py` | Breadth reliability — built, never reported; it is the input every correction above needs. |
+| `causal_breadth.py` | The causal version of A3 (C1). Needs a channel run made with `--all-features` (`sbatch run_channels.slurm <suite> all`); skipped otherwise. Also carries the leak-free base-rate comparison for A3's own numbers. |
 
 ---
 
