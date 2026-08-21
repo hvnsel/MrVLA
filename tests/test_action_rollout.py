@@ -171,6 +171,75 @@ def test_field_names_match_the_a1_contract():
         assert {"action", "success"} <= keys, keys
 
 
+# ---------------------------------------------------------------------------
+# episode sharding -- the loop needs a simulator, but the PARTITION is pure arithmetic
+# ---------------------------------------------------------------------------
+def _shard(n_tasks, trials, n_workers):
+    """Mirror of the partition and episode-id arithmetic in rollout_action_positions."""
+    n_by_task = [trials] * n_tasks
+    ep_base = np.concatenate([[0], np.cumsum(n_by_task)[:-1]]).astype(int)
+    out = {}
+    for w in range(n_workers):
+        got = []
+        for task_id in range(n_tasks):
+            for t in range(n_by_task[task_id]):
+                if (int(ep_base[task_id]) + t) % n_workers == w:
+                    got.append((task_id, t, int(ep_base[task_id]) + t))
+        out[w] = got
+    return out
+
+
+def test_every_init_state_is_claimed_exactly_once():
+    """An init state run twice double-counts an episode; one skipped is silently lost."""
+    sh = _shard(10, 50, 4)
+    claimed = [(t, tr) for w in sh for (t, tr, _e) in sh[w]]
+    assert len(claimed) == 500, len(claimed)
+    assert len(set(claimed)) == 500, "an init state was claimed by two workers"
+
+
+def test_episode_ids_are_unique_and_worker_count_independent():
+    """The analysis groups by episode id, so a collision would merge two rollouts into one."""
+    for n_workers in (1, 2, 4, 8):
+        sh = _shard(10, 50, n_workers)
+        ids = [e for w in sh for (_t, _tr, e) in sh[w]]
+        assert len(set(ids)) == 500, (n_workers, len(set(ids)))
+        assert sorted(ids) == list(range(500)), n_workers
+
+
+def test_episode_sharding_is_exactly_balanced():
+    """The point of the switch. Sharding on the per-task trial instead would give
+    130/130/120/120, because 50 trials does not divide by 4 and the remainder lands on the
+    same two workers in every task."""
+    counts = sorted(len(v) for v in _shard(10, 50, 4).values())
+    assert counts == [125, 125, 125, 125], counts
+
+
+def test_sharding_stays_balanced_for_awkward_worker_counts():
+    for nw in (3, 6, 7):
+        counts = sorted(len(v) for v in _shard(10, 50, nw).values())
+        assert max(counts) - min(counts) <= 1, (nw, counts)
+
+
+def test_each_worker_sees_every_task():
+    """Balance in COUNT is not enough -- per-task difficulty differs, so every worker must
+    draw from every task or the hard tasks concentrate on one GPU again."""
+    sh = _shard(10, 50, 4)
+    for w, got in sh.items():
+        assert len({t for (t, _tr, _e) in got}) == 10, (w, got[:3])
+
+
+def test_a_worker_is_empty_only_when_workers_outnumber_episodes():
+    """Global-index sharding keeps every worker busy until there are literally fewer
+    episodes than workers -- per-task sharding starved workers much sooner, whenever
+    n_workers exceeded the per-task trial count."""
+    sh = _shard(2, 3, 5)                      # 6 episodes, 5 workers: nobody idle
+    assert sum(len(v) for v in sh.values()) == 6
+    assert all(len(v) >= 1 for v in sh.values()), {w: len(v) for w, v in sh.items()}
+    sh2 = _shard(2, 3, 8)                     # 6 episodes, 8 workers: two idle
+    assert sum(len(v) for v in sh2.values()) == 6
+    assert sum(len(v) == 0 for v in sh2.values()) == 2
+
+
 if __name__ == "__main__":
     for name, fn in sorted(list(globals().items())):
         if name.startswith("test_") and callable(fn):

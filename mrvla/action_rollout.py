@@ -167,9 +167,18 @@ def rollout_action_positions(model, processor, collector, writer, task_suite_nam
     same warm-up wait, same init-state ordering -- so success rates are comparable with the
     ablation runs. `collector` must be an `ActionPositionCollector` on the target layer.
 
-    Tasks are sharded round-robin across `n_workers` so one process per GPU can be launched
-    the way `run_ablation.py` already does. Sharding by TASK rather than by episode keeps
-    each worker's init-state ordering identical to a single-process run.
+    Sharded by EPISODE across `n_workers`, one process per GPU, the way `run_ablation.py`
+    launches. Worker w takes the episodes whose GLOBAL index is congruent to w, so each init
+    state is used exactly once and the episode id for a given (task, trial) is identical at
+    any worker count.
+
+    Episode sharding rather than task sharding, because task sharding is badly unbalanced
+    here on BOTH axes: 10 tasks over 4 workers gives two workers 150 episodes and two only
+    100, and per-task success rates differ enough (task 0 ran 2/5 in the smoke, task 2 ran
+    5/5) that the worker holding the hard tasks also has the longest episodes, since a
+    failure burns all `max_steps` where a success stops at `done`. Splitting by episode
+    gives every worker the same 125 episodes AND the same mix of easy and hard tasks, so
+    their runtimes converge instead of diverging.
     """
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
@@ -194,14 +203,22 @@ def rollout_action_positions(model, processor, collector, writer, task_suite_nam
     n_tasks = suite.n_tasks if max_tasks is None else min(suite.n_tasks, max_tasks)
 
     per_task: dict[int, dict] = {}
-    global_episode = 0
+    # Episode ids are computed from (task, trial) rather than counted up, so they do not
+    # depend on which trials this worker happens to run.
+    n_trials_by_task = [min(trials_per_task, len(suite.get_task_init_states(t)))
+                        for t in range(n_tasks)]
+    ep_base = np.concatenate([[0], np.cumsum(n_trials_by_task)[:-1]]).astype(int)
 
     for task_id in range(n_tasks):
         task = suite.get_task(task_id)
         init_states = suite.get_task_init_states(task_id)
-        n_trials = min(trials_per_task, len(init_states))
-        if task_id % n_workers != worker_id:
-            global_episode += n_trials      # keep episode ids identical across workers
+        n_trials = n_trials_by_task[task_id]
+        # Shard on the GLOBAL episode index, not the per-task trial: 50 trials over 4
+        # workers leaves a remainder, so `trial % n_workers` gives 130/130/120/120 across
+        # ten tasks. The global index runs 0..499 contiguously, so this splits exactly.
+        mine = [t for t in range(n_trials)
+                if (int(ep_base[task_id]) + t) % n_workers == worker_id]
+        if not mine:
             continue
 
         writer.register_task(task_id, task.language)
@@ -213,7 +230,7 @@ def rollout_action_positions(model, processor, collector, writer, task_suite_nam
         env.seed(seed)
         n_succ = 0
 
-        for trial in range(n_trials):
+        for trial in mine:
             env.reset()
             obs = env.set_init_state(init_states[trial])
             buffer, success, step = [], False, 0
@@ -247,14 +264,13 @@ def rollout_action_positions(model, processor, collector, writer, task_suite_nam
                     success = True
                     break
 
-            commit_episode(writer, buffer, success, global_episode, task_id)
+            commit_episode(writer, buffer, success, int(ep_base[task_id]) + trial, task_id)
             n_succ += int(success)
-            global_episode += 1
 
-        per_task[task_id] = {"task": task.language, "episodes": n_trials,
-                             "successes": n_succ, "success_rate": n_succ / max(1, n_trials)}
+        per_task[task_id] = {"task": task.language, "episodes": len(mine),
+                             "successes": n_succ, "success_rate": n_succ / max(1, len(mine))}
         print(f"[rollout] task {task_id} ({task.language[:40]}): "
-              f"{n_succ}/{n_trials} success", flush=True)
+              f"{n_succ}/{len(mine)} success", flush=True)
         env.close()
 
     return per_task
