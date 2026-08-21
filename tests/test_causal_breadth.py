@@ -36,8 +36,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from causal_breadth import (binomial_denominator_null, flip_rate, load_pair,  # noqa: E402
-                            loto_base_rate, paired_column_shuffle)
+from causal_breadth import (binomial_denominator_null, counter_base_rate,  # noqa: E402
+                            flip_rate, load_pair, loto_base_rate, paired_column_shuffle)
 from mrvla.attribution import participation_ratio  # noqa: E402
 from mrvla.rankbasis import _folds, _folds_xy, loto_partial_target  # noqa: E402
 
@@ -343,6 +343,67 @@ def test_denominator_control_enters_as_a_third_control():
     with_ = loto_partial_target(C, R, base, "hinge5", extra=[den]).mean()
     assert abs(with_) < abs(without) or abs(with_) < 0.05, \
         f"the denominator control did nothing: {without:+.4f} -> {with_:+.4f}"
+
+
+def _base_rate_arms(C, leak, S=7):
+    """Firing counts = flat baseline + `leak` x that task's own mass.
+
+    At leak > 0 the ALL-TASKS base rate carries C[gi] -- the held-out target -- and the
+    training-only one cannot. That is the leak `run_attribution.py:314` has: it accumulates
+    fire_count over every task including the one being predicted.
+    """
+    G, F = C.shape
+    per_gf = 600.0 + leak * 4000.0 * C / C.mean()
+    n_act = np.repeat((per_gf.T / S)[:, :, None], S, axis=2)
+    n_dec = np.full((G, S), per_gf.sum(axis=1).mean() / 25)
+    return {m: counter_base_rate(n_act, n_dec, m) for m in ("none", "held", "other")}
+
+
+def test_base_rate_arms_coincide_when_there_is_nothing_to_leak():
+    """If firing is independent of the per-task mass there is no leak, and all three exclusion
+    rules must give the SAME number. Any spread here would be the arms themselves, not a finding."""
+    fx = _planted(seed=41, F=600)
+    arms = _base_rate_arms(fx["C"], leak=0.0)
+    vals = {m: loto_partial_target(fx["C"], fx["C"], v, "linear").mean() for m, v in arms.items()}
+    assert max(vals.values()) - min(vals.values()) < 1e-9, vals
+    assert abs(vals["none"]) > 0.05, "fixture must carry real signal or the test is vacuous"
+
+
+def test_the_placebo_shows_the_leak_comparison_over_attributes():
+    """WHY the placebo is not decoration, and the reason A3's +0.10 uplift is not yet reportable.
+
+    The natural comparison is "base rate over all G tasks" vs "over the 9 training tasks", and it
+    is tempting to call the whole difference a leak. But those two differ in TWO ways: which tasks
+    are excluded, and that one is built from nine tasks rather than ten. The placebo drops a task
+    that is NOT the held-out one -- same nine-of-ten construction, leak left in -- and on a
+    fixture with a genuine leak it still reproduces a large share of the move.
+
+    So the leak-attributable part is (C - B) - (P - B), not (C - B). Asserting that the placebo
+    share is material is what stops a sample-composition effect being published as a leak fix.
+    """
+    fx = _planted(seed=41, F=600)
+    arms = _base_rate_arms(fx["C"], leak=1.0)
+    v = {m: loto_partial_target(fx["C"], fx["C"], a, "linear").mean() for m, a in arms.items()}
+    d_leak, d_placebo = v["held"] - v["none"], v["other"] - v["none"]
+    assert abs(d_leak) > 0.02, f"fixture planted no detectable leak: {d_leak:+.4f}"
+    assert abs(d_placebo) > 0.3 * abs(d_leak), (
+        f"the placebo moved {d_placebo:+.4f} against the leak arm's {d_leak:+.4f}; if it really "
+        f"were this inert the whole B->C difference could be attributed to the held-out task")
+    assert np.sign(d_placebo) == np.sign(d_leak), (d_placebo, d_leak)
+
+
+def test_counter_base_rate_excludes_what_it_says_it_excludes():
+    """The three arms must actually differ in which task they drop -- an off-by-one here would
+    make the placebo silently identical to the leak-free arm and the decomposition meaningless."""
+    F2, G2, S2 = 4, 5, 3
+    n_act = np.zeros((F2, G2, S2))
+    n_act[0, 2] = 900.0                       # feature 0 fires ONLY on task 2
+    n_dec = np.full((G2, S2), 1000.0)
+    none_, held, other = (counter_base_rate(n_act, n_dec, m) for m in ("none", "held", "other"))
+    assert (none_[:, 0] > 0).all(), "the all-tasks arm must always see task 2"
+    assert held[2, 0] == 0.0 and held[0, 0] > 0.0, "the leak-free arm must drop its own fold"
+    assert other[1, 0] == 0.0 and other[2, 0] > 0.0, "the placebo must drop task (gi+1), not gi"
+    assert np.array_equal(loto_base_rate(n_act, n_dec), held), "alias drifted from 'held'"
 
 
 if __name__ == "__main__":

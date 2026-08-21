@@ -160,22 +160,46 @@ def flip_rate(flip_gts: np.ndarray, n_gts: np.ndarray, slots=None,
     return R, den
 
 
-def loto_base_rate(n_active: np.ndarray, n_dec: np.ndarray) -> np.ndarray:
-    """[G, F] base rate where row gi is computed from fold gi's TRAINING tasks only.
+def counter_base_rate(n_active: np.ndarray, n_dec: np.ndarray, exclude: str = "held") -> np.ndarray:
+    """[G, F] base rate rebuilt from the channel counters, under one of three exclusion rules.
 
-    `run_attribution.py` computes base_rate globally over all tasks, so A3's control has always
-    carried a little held-out information. That matters more here than there, because the
-    denominator sits directly on the path from breadth to a ratio target.
+    `exclude="none"`  -- all G tasks, the same vector in every fold. Differs from the shipped
+                         `base_rate` only in DEFINITION, so A-vs-this prices the definition.
+    `exclude="held"`  -- fold gi drops task gi. The leak-free control.
+    `exclude="other"` -- fold gi drops task (gi+1) % G. THE PLACEBO: same nine-of-ten
+                         construction, same definition, same sample size, but the held-out task
+                         is still in there. If the placebo moves the number as much as "held"
+                         does, the uplift is about sample composition and not about the leak,
+                         and the whole comparison has to be dropped.
+
+    Why the placebo is not optional. `run_attribution.py:314` builds base_rate over all tasks
+    including the held-out one, so A3's second control has always carried some of its own target
+    -- that is real. But swapping it for this one changes TWO things at once (the exclusion and
+    the numerator/denominator convention, see the module note on run_attribution.py:291), and a
+    +0.10 move on the paper's headline in the flattering direction is exactly the shape of result
+    that has to be decomposed before it is believed.
     """
     per_task = n_active.sum(axis=2)                                     # [F, G]
     dec_task = n_dec.sum(axis=1)                                        # [G]
     G = per_task.shape[1]
     out = np.empty((G, per_task.shape[0]), dtype=np.float64)
     for gi in range(G):
-        k = np.arange(G) != gi
+        if exclude == "none":
+            k = np.ones(G, dtype=bool)
+        elif exclude == "held":
+            k = np.arange(G) != gi
+        elif exclude == "other":
+            k = np.arange(G) != ((gi + 1) % G)
+        else:
+            raise ValueError(f"unknown exclude {exclude!r}")
         tot = dec_task[k].sum()
         out[gi] = per_task[:, k].sum(axis=1) / tot if tot > 0 else np.nan
     return out
+
+
+def loto_base_rate(n_active: np.ndarray, n_dec: np.ndarray) -> np.ndarray:
+    """[G, F] base rate from fold gi's TRAINING tasks only. Thin alias, kept for readability."""
+    return counter_base_rate(n_active, n_dec, "held")
 
 
 # ---------------------------------------------------------------- the three floors
@@ -333,18 +357,52 @@ def main() -> None:
         print("[cb]       feature set differs from A3's; nothing below is readable. ***")
     out["positive_control"] = ctrl
 
-    # A3's own control plane, recomputed without the leak. `run_attribution.py` builds base_rate
-    # globally over ALL tasks, so the second control has always carried a little of the held-out
-    # target. The per-(feature, task) firing counts this pass added make the clean per-fold form
-    # computable for the first time. This is the ATTRIBUTED target -- i.e. the paper's headline
-    # number, not the causal one -- so if it moves, A3 moves.
-    br_loto_all = loto_base_rate(D["n_active"], D["n_dec"])
-    ctrl_clean = estimate(C, C, br_loto_all, specs)
-    print("[cb]   same, with base_rate from the training tasks only (no leak):")
-    for spec in specs:
-        a, b = ctrl[spec]["partial"], ctrl_clean[spec]["partial"]
-        print(f"[cb]     {spec:8s} {b:+.4f}   vs {a:+.4f} shipped   delta {b - a:+.4f}")
-    out["positive_control_loto_base_rate"] = ctrl_clean
+    # --- A3's control plane, decomposed ------------------------------------------------------
+    #
+    # Swapping the shipped base_rate for one rebuilt from the channel counters changes TWO things
+    # at once, and the first pass attributed the whole move to the second of them:
+    #
+    #   A -> B   DEFINITION. run_attribution.py:291-314 accumulates the numerator over ALL n*7
+    #            rows but the denominator only over rows whose token was in range, so the shipped
+    #            base_rate is inflated by ~1/0.992. That is close to a uniform scale factor, which
+    #            a rank control ignores -- but only close: where invalid tokens are not spread
+    #            evenly across features the inflation is feature-specific and the ranking moves.
+    #   B -> C   THE LEAK. base_rate over all G tasks includes the held-out one, so A3's second
+    #            control has always carried a little of its own target.
+    #
+    # And a PLACEBO, because B -> C is not self-evidently the explanation. The two vectors differ
+    # by a tenth of a sample estimated from ~45k rows per task; they should be ~0.999 rank
+    # correlated, and a control that identical should not move a partial by 0.10. The placebo
+    # drops a task that is NOT the held-out one: same definition, same nine-of-ten construction,
+    # same sample size, leak intact. If it moves the number too, the effect is sample composition
+    # and the comparison is worthless.
+    #
+    # This is the ATTRIBUTED target -- the paper's headline, not the causal one -- so whatever
+    # this table says, A3 inherits.
+    _cbr = lambda mode: counter_base_rate(D["n_active"], D["n_dec"], mode)
+    br_arms = {"B all tasks (definition only)": _cbr("none"),
+               "C training tasks (leak-free)": _cbr("held"),
+               "P placebo, drops a NON-held task": _cbr("other")}
+    print("[cb]   A3's control plane, decomposed (attributed target throughout):")
+    print(f"[cb]     {'A shipped base_rate':34s} "
+          + "  ".join(f"{sp}={ctrl[sp]['partial']:+.4f}" for sp in specs))
+    out["base_rate_decomposition"] = {"A shipped": {sp: ctrl[sp]["partial"] for sp in specs}}
+    for label, brv in br_arms.items():
+        e = estimate(C, C, brv, specs)
+        out["base_rate_decomposition"][label] = {sp: e[sp]["partial"] for sp in specs}
+        print(f"[cb]     {label:34s} "
+              + "  ".join(f"{sp}={e[sp]['partial']:+.4f}" for sp in specs)
+              + "  (delta " + ", ".join(f"{e[sp]['partial'] - ctrl[sp]['partial']:+.4f}"
+                                        for sp in specs) + ")")
+    br_b, br_c = br_arms["B all tasks (definition only)"], br_arms["C training tasks (leak-free)"]
+    rho_ab = spearman(br, br_b[0])
+    rho_bc = float(np.mean([spearman(br_b[gi], br_c[gi]) for gi in range(G)]))
+    print(f"[cb]     rho(A shipped, B rebuilt) = {rho_ab:+.5f}   "
+          f"rho(B, C) per fold = {rho_bc:+.5f}")
+    print("[cb]     (read B-A as the definition effect, C-B as the leak, and P-A as what the")
+    print("[cb]      same construction gives with the leak left IN. If P tracks C, neither.)")
+    out["base_rate_decomposition"]["rho_shipped_vs_rebuilt"] = float(rho_ab)
+    out["base_rate_decomposition"]["rho_all_vs_loto_per_fold"] = rho_bc
 
     # --- the primary estimate --------------------------------------------------------------
     prim = estimate(C, R, br, specs, keep_mask=keep)
