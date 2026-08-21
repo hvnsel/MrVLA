@@ -19,7 +19,7 @@
 #
 # SMOKE TEST FIRST on ghx4-interactive -- this has never run:
 #   python collect_action_rollouts.py --model openvla/openvla-7b-finetuned-libero-goal \
-#     --task-suite libero_goal --unnorm-key libero_goal \
+#     --task-suite libero_goal --unnorm-key libero_goal --no-flash-attn \
 #     --max-tasks 1 --trials-per-task 2 --out /tmp/rollout_smoke
 # Check: shard shapes are [n, 7, 4096], success is not all-1, and head_constants.npz exists.
 
@@ -38,7 +38,7 @@ for i in 0 1 2 3; do
   python /u/hzhang77/mrvla/collect_action_rollouts.py \
     --model "openvla/openvla-7b-finetuned-libero-${M}" \
     --task-suite "libero_${M}" --unnorm-key "libero_${M}" \
-    --layer 31 --trials-per-task 50 \
+    --layer 31 --trials-per-task 50 --no-flash-attn \
     --worker-id "$i" --n-workers 4 --device "cuda:$i" \
     --out "$OUT" &
 done

@@ -41,7 +41,7 @@ echo
 echo "Gates 0-2 done for ${M}.  If Gate 1 PASSED, Gates 3-4 need two more things:"
 echo "  1. export the checkpoint's norm_stats once (GPU node, ~2 min):"
 echo "       python -c \"import json; from mrvla.model_utils import load_openvla; \\"
-echo "         m,_=load_openvla('openvla/openvla-7b-finetuned-libero-${M}'); \\"
+echo "         m,_=load_openvla('openvla/openvla-7b-finetuned-libero-${M}', use_flash_attn=False); \\"
 echo "         json.dump({k:{'action':v['action']} for k,v in m.norm_stats.items()}, \\"
 echo "                   open('${BASE}/norm_stats_${M}.json','w'), default=list)\""
 echo "  2. re-run with the LIBERO stack importable:"
