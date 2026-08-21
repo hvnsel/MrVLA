@@ -172,9 +172,17 @@ def main() -> None:
         ROW.append(rows); SLOT.append(slots)
         n_total += rows.size
 
+        # Gate 1 is the structural kill and it converges on the first shard -- mu-vs-r is a
+        # property of the model, not something that needs every decision. Print it running so
+        # a clear failure can be killed in minutes instead of after the whole encode pass.
+        g1 = gate1_mu_over_r(np.concatenate(MU), np.concatenate(RR))
+        print(f"[gates]   {os.path.basename(sp)}: {n_total} decisions | "
+              f"gate1(provisional) {'PASS' if g1['pass'] else 'FAIL'} "
+              f"mu_retained={g1['mu_retained']:+.4f} cv(mu/r)={g1['cv_mu_over_r']:.4f} "
+              f"corr(mu,r)={g1['pearson_mu_r']:+.3f}", flush=True)
+
         # ---- Gates 3-4 subsample -------------------------------------------------
         if demos is None:
-            print(f"[gates]   {os.path.basename(sp)}: {n_total} decisions", flush=True)
             continue
         keep_n = max(1, args.sample // len(shards))   # A1 writes fixed-size shards
         sel = rng.choice(rows.size, size=min(keep_n, rows.size), replace=False)
@@ -207,8 +215,8 @@ def main() -> None:
         s_emit.append((n_bins - rows[sel]).astype(np.float64))
         s_dev.append(np.abs((n_bins - rows[sel]) - dbin))
         s_feat.append(feat); s_prior.append(pri)
-        print(f"[gates]   {os.path.basename(sp)}: {n_total} decisions, "
-              f"{sum(x.shape[0] for x in s_feat)} sampled", flush=True)
+        print(f"[gates]     sampled {sum(x.shape[0] for x in s_feat)} rows for Gates 3-4",
+              flush=True)
 
     mu_all = np.concatenate(MU); r_all = np.concatenate(RR)
     row_all = np.concatenate(ROW); slot_all = np.concatenate(SLOT)
