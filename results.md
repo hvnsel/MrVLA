@@ -1081,13 +1081,31 @@ different statistics, one answer — **what the paper calls breadth is substanti
 activity.** Whether that is written as a limitation of Path A or as the paper's finding is a
 framing decision, not a section-level one.
 
-**One methodological by-product, and it points at the headline.** `run_attribution.py` computes
-`base_rate` globally over *all* tasks including the held-out one, so A3's second control has
-always carried a little of the target. The per-(feature, task) firing counts this pass added make
-the clean per-fold form computable for the first time, and it raises the causal partial on all
-four suites (+0.26→+0.31, +0.107→+0.165, +0.127→+0.153, +0.128→+0.181). Whether the same uplift
-applies to A3's own numbers is computed by `causal_breadth.py`'s positive-control block and is
-**not yet filled in here**.
+**One methodological by-product, and it points straight at the headline — but it is not settled.**
+`run_attribution.py` computes `base_rate` globally over *all* tasks including the held-out one, so
+A3's second control has always carried a little of its own target. The per-(feature, task) firing
+counts this pass added make a clean per-fold form computable for the first time, and swapping it
+in raises the ATTRIBUTED partial — A3's own headline — on all four suites:
+
+| | goal | spatial | object | 10 |
+|---|---|---|---|---|
+| A3 as published (tensor4) | +0.4516 | +0.4036 | +0.3624 | +0.4725 |
+| rebuilt, training tasks only | +0.5624 | +0.5059 | +0.4321 | +0.5748 |
+| delta | +0.111 | +0.102 | +0.070 | +0.102 |
+
+**These numbers are not reportable yet and must not be quoted.** The swap changes two things at
+once: which tasks the base rate is built from (the leak) *and* how it is defined (P9's
+numerator/denominator mismatch). The comparison above attributes the whole move to the first.
+Worse, the stated mechanism does not obviously support the magnitude — the two vectors are
+0.999 rank-correlated, and a control that nearly identical moving a partial by 0.10 needs
+demonstrating rather than asserting.
+
+`causal_breadth.py` now runs a four-way decomposition — shipped / rebuilt-all-tasks /
+rebuilt-training-only / **placebo** — where the placebo drops a task that is *not* the held-out
+one: same nine-of-ten construction, leak left in. On a synthetic fixture with a planted leak the
+placebo reproduces **76%** of what the leak arm shows, which is exactly the over-attribution the
+control exists to catch. Until the four-way table has been read on real data, the honest statement
+is that A3's control has a known leak of **unmeasured size**.
 
 ---
 
@@ -1217,6 +1235,18 @@ cosmetic in practice: the same decoder through another model's head gives mean c
 | `_ranks` uses `argsort(argsort(x))`, which breaks ties by **array index** instead of averaging | **not fixed** — see below |
 | `corr(damage, attribution)` bootstrap resampled tasks while treating each task's damage as fixed | fixed (two-level); the −0.770 it produced on the goal coalition was noise-on-noise |
 | shared-unembedding assumption (P8) | fixed; per-model heads |
+| `base_rate`'s numerator counts every row, its denominator only valid rows (`run_attribution.py:291-314`) | **not fixed** — see below |
+| the transition control was the gripper's clock broadcast to all seven slots (P5d) | fixed; per-channel mask, new output dir so old numbers stay reproducible |
+| `base_rate` is computed over all tasks including the held-out one, so A3's second control carries some of its own target | **not fixed** — size unresolved, see C1 |
+
+**The base-rate numerator and denominator disagree.** `run_attribution.py` accumulates
+`fire_count` over **all** `n*7` rows but increments `n_total` only after the invalid-token
+`continue`, so the published `base_rate` is `fires(all rows) / count(valid rows)` — inflated by
+about `1/0.992`. That is close to a uniform scale factor, which a rank control ignores; it is not
+exactly one, because wherever invalid tokens are unevenly distributed across features the
+inflation is feature-specific and the ranking shifts. Small, but it means the shipped `base_rate`
+and any rebuilt-from-counters version differ **by definition as well as by the leak**, which is
+why C1's uplift has to be decomposed rather than attributed.
 
 **The tie defect is live and it matters.** `base_rate` is a count over a fixed denominator, so
 **10.3% of goal's features are tied**, and each tied block receives an arbitrary ordering
