@@ -56,6 +56,7 @@ from mrvla.stats import rankdata_average
 
 __all__ = [
     "topk_sets", "jaccard_at_lag", "coalition_dynamics", "action_dynamics",
+    "episode_kinematics",
     "prefix_means", "max_unbiased_t", "auroc_curve", "ridge_dual_loto", "probe_loto",
     "weight_breadth_skew",
 ]
@@ -317,3 +318,47 @@ def weight_breadth_skew(weights, adjusted_breadth, top_n: int = 50) -> dict:
             np.mean([lookup[i] < 50.0 for i in top])),
         "top_n": int(top_n),
     }
+
+
+# ---------------------------------------------------------------------------
+# how far did it actually travel? -- the distance-to-goal control
+# ---------------------------------------------------------------------------
+def episode_kinematics(actions: np.ndarray, episode, timestep, window: int) -> dict:
+    """Per-episode motion over the first `window` timesteps, from the commanded actions.
+
+    The leading alternative explanation for any early-window signal that predicts episode
+    duration is DISTANCE: an episode starting with the gripper far from the object takes
+    more steps AND may leave the early features with less to say, so distance would cause
+    both. Pose is not logged, but the commanded actions ARE delta-poses, so the robot's own
+    motion is recoverable without re-running anything.
+
+        path      sum of ||delta xyz||  -- total distance travelled
+        net       ||sum of delta xyz||  -- how far it actually got
+        straight  net / path            -- ~1 travelling purposefully toward something far,
+                                           ~0 milling around near something close
+        rot       sum of ||delta rpy||  -- reorientation effort, which a far reach need not
+                                           involve and a fiddly close one does
+
+    A caveat worth stating rather than burying: these measure how far the policy DID move,
+    not how far it NEEDED to. They are a proxy for the confound, not the confound itself.
+    The exact control would parse initial object and end-effector pose out of LIBERO's init
+    states, which needs the simulator and per-task body indices.
+    """
+    A = np.asarray(actions, dtype=np.float64)
+    e = np.asarray(episode, dtype=np.int64)
+    t = np.asarray(timestep, dtype=np.int64)
+    uniq = np.unique(e)
+    out = {k: np.full(uniq.size, np.nan) for k in ("path", "net", "straight", "rot")}
+    out["episodes"] = uniq
+    for i, ep in enumerate(uniq):
+        m = (e == ep) & (t < window)
+        if not m.any():
+            continue
+        d = A[m][:, :3]
+        path = float(np.linalg.norm(d, axis=1).sum())
+        net = float(np.linalg.norm(d.sum(axis=0)))
+        out["path"][i] = path
+        out["net"][i] = net
+        out["straight"][i] = net / path if path > 0 else np.nan
+        out["rot"][i] = float(np.linalg.norm(A[m][:, 3:6], axis=1).sum())
+    return out

@@ -53,7 +53,9 @@ import numpy as np
 import torch
 
 from identify_features import adjusted_breadth
-from mrvla.dynamics import action_dynamics, coalition_dynamics, topk_sets
+from mrvla.dynamics import (
+    action_dynamics, coalition_dynamics, episode_kinematics, topk_sets,
+)
 from mrvla.prior_gates import prior_vectors
 from mrvla.readout import signature_matrix, unnormalized_logits
 from mrvla.reliance import aggregate_episodes, reliance_signals
@@ -172,6 +174,11 @@ def main() -> None:
     a_rt = aggregate_episodes(base["returns"], aep, ats, asc, windows=(W,))
     per_ep["action_churn"], per_ep["action_returns"] = a_ch, a_rt
 
+    kin = episode_kinematics(act, aep, ats, W)
+    assert np.array_equal(kin["episodes"], per_ep["action_churn"]["episodes"])
+    for nm in ("path", "net", "straight", "rot"):
+        per_ep[f"kin_{nm}"] = {f"first{W}": kin[nm], "episodes": kin["episodes"]}
+
     ref = per_ep["task_margin"]
     ep_ids = ref["episodes"]
     ok = ref["success"] == 1
@@ -190,20 +197,23 @@ def main() -> None:
 
     mag = per_ep["phi_total"][f"first{W}"]
     ach = per_ep["action_churn"][f"first{W}"]
+    dist = [per_ep[f"kin_{n}"][f"first{W}"][ok] for n in ("path", "net", "straight")]
+    CONTROLS = ("phi_total", "action_churn", "kin_path", "kin_net", "kin_straight", "kin_rot")
     results = {}
     for nm, agg in per_ep.items():
         x, y, t = agg[f"first{W}"][ok], dur[ok], ep_task[ok]
+        # A control partialled on itself is degenerate, so those cells stay empty rather
+        # than showing a zero that would read as a collapsed effect.
         results[nm] = {
             "raw": within_task_spearman(x, y, t),
-            # phi_total and action_churn are the controls; partialling either on itself is
-            # degenerate, so those cells are left empty rather than filled with a zero that
-            # would read as a collapsed effect.
             "partial_magnitude": (None if nm == "phi_total"
                                   else within_task_partial(x, y, [mag[ok]], t)),
             "partial_action_churn": (None if nm == "action_churn"
                                      else within_task_partial(x, y, [ach[ok]], t)),
-            "partial_both": (None if nm in ("phi_total", "action_churn")
-                             else within_task_partial(x, y, [mag[ok], ach[ok]], t)),
+            "partial_distance": (None if nm in CONTROLS
+                                 else within_task_partial(x, y, dist, t)),
+            "partial_all": (None if nm in CONTROLS
+                            else within_task_partial(x, y, [mag[ok], ach[ok]] + dist, t)),
         }
 
     summary = {"rollout_dir": args.rollout_dir, "window": W, "row_perm": perm.tolist(),
@@ -216,17 +226,26 @@ def main() -> None:
         return f"{v['mean']:+.3f} {v['n_positive']}/{v['n_tasks']}" if v else "  (control)"
 
     print(f"\n{'signal':<20}{'rho|task':>10}{'+tasks':>8}"
-          f"{'|mag':>14}{'|action_churn':>16}{'|both':>14}")
-    for nm in ("task_margin", "task_margin_SHUF", "mu_t", "share", "phi_total", "margin",
-               "feature_churn", "feature_returns", "action_churn", "action_returns"):
+          f"{'|mag':>13}{'|churn':>13}{'|distance':>13}{'|ALL':>13}")
+    for nm in ("task_margin", "task_margin_SHUF", "mu_t", "share", "margin",
+               "feature_churn", "feature_returns", "action_returns",
+               "phi_total", "action_churn", "kin_path", "kin_net", "kin_straight", "kin_rot"):
         r = results[nm]
         print(f"{nm:<20}{r['raw']['mean']:>+10.3f}{r['raw']['n_positive']:>5}/"
-              f"{r['raw']['n_tasks']:<3}{cell(r['partial_magnitude']):>14}"
-              f"{cell(r['partial_action_churn']):>16}{cell(r['partial_both']):>14}")
+              f"{r['raw']['n_tasks']:<3}{cell(r['partial_magnitude']):>13}"
+              f"{cell(r['partial_action_churn']):>13}"
+              f"{cell(r.get('partial_distance')):>13}{cell(r.get('partial_all')):>13}")
     print("\nPositive rho = the signal is HIGHER in episodes that took LONGER.")
     print("Each partial cell shows the mean and how many of the 10 tasks agreed in sign.")
     print("task_margin must beat task_margin_SHUF, or it is reading what every C row shares.")
-    print("\nTHE COLUMN THAT DECIDES IT is |action_churn. A stuck robot repeats its command,")
+    print("\nkin_* are the DISTANCE controls, derived from the commanded delta-poses: how")
+    print("far the robot travelled, how far it got, and how straight it went. If an episode")
+    print("simply started further from the object it would take longer AND leave the early")
+    print("features with less to say, so distance is the leading common cause. Read the")
+    print("kin_ rows first: if they predict duration strongly and `share` collapses in")
+    print("|distance, the signal was distance. They measure how far it DID move, not how far")
+    print("it NEEDED to, so they bound the confound rather than eliminating it.\n")
+    print("THE COLUMN THAT DECIDES IT is |action_churn. A stuck robot repeats its command,")
     print("and gate 2 showed the constant prior favours the modal action bins -- so `share`")
     print("and action churn may be one phenomenon read two ways. If `share` survives that")
     print("partial it carries information the commanded actions do not; if it collapses, a")

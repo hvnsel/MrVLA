@@ -26,8 +26,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mrvla.dynamics import (  # noqa: E402
-    action_dynamics, auroc_curve, coalition_dynamics, jaccard_at_lag, max_unbiased_t,
-    prefix_means, probe_loto, ridge_dual_loto, topk_sets, weight_breadth_skew,
+    action_dynamics, auroc_curve, coalition_dynamics, episode_kinematics, jaccard_at_lag,
+    max_unbiased_t, prefix_means, probe_loto, ridge_dual_loto, topk_sets,
+    weight_breadth_skew,
 )
 
 F = 64
@@ -126,6 +127,58 @@ def test_action_dynamics_is_quiet_on_a_steady_command():
     d = action_dynamics(a, np.zeros(6, int), np.arange(6))
     assert np.allclose(d["returns"][2:], 0.0), d["returns"]
     assert np.allclose(d["churn"][1:], 0.0, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# kinematics -- the distance control
+# ---------------------------------------------------------------------------
+def _straight_line(n, step=0.1):
+    """A robot moving steadily in +x: path and net are equal, so straightness is 1."""
+    a = np.zeros((n, 7))
+    a[:, 0] = step
+    return a
+
+
+def test_kinematics_on_a_straight_line():
+    k = episode_kinematics(_straight_line(20), np.zeros(20, int), np.arange(20), window=10)
+    assert np.isclose(k["path"][0], 1.0)
+    assert np.isclose(k["net"][0], 1.0)
+    assert np.isclose(k["straight"][0], 1.0)
+
+
+def test_kinematics_on_a_back_and_forth():
+    """Milling around: real path length, zero net progress, straightness ~0. This is the
+    contrast the control exists to draw -- a far reach and a fiddly close one can travel the
+    same distance and only one of them gets anywhere."""
+    a = np.zeros((20, 7))
+    a[::2, 0] = 0.1
+    a[1::2, 0] = -0.1
+    k = episode_kinematics(a, np.zeros(20, int), np.arange(20), window=10)
+    assert np.isclose(k["path"][0], 1.0)
+    assert k["net"][0] < 1e-9
+    assert k["straight"][0] < 1e-9
+
+
+def test_kinematics_respects_the_window():
+    k5 = episode_kinematics(_straight_line(20), np.zeros(20, int), np.arange(20), window=5)
+    k10 = episode_kinematics(_straight_line(20), np.zeros(20, int), np.arange(20), window=10)
+    assert np.isclose(k5["path"][0] * 2, k10["path"][0])
+
+
+def test_kinematics_separates_episodes_and_reports_rotation():
+    a = np.zeros((20, 7))
+    a[:10, 0] = 0.1                      # episode 0 translates
+    a[10:, 3] = 0.2                      # episode 1 rotates
+    ep = np.repeat([0, 1], 10)
+    k = episode_kinematics(a, ep, np.tile(np.arange(10), 2), window=10)
+    assert np.isclose(k["path"][0], 1.0) and np.isclose(k["rot"][0], 0.0)
+    assert np.isclose(k["path"][1], 0.0) and np.isclose(k["rot"][1], 2.0)
+
+
+def test_kinematics_is_nan_for_an_episode_outside_the_window():
+    k = episode_kinematics(_straight_line(4), np.zeros(4, int), np.array([10, 11, 12, 13]),
+                           window=5)
+    assert np.isnan(k["path"][0])
 
 
 # ---------------------------------------------------------------------------
