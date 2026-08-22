@@ -182,13 +182,29 @@ def main() -> None:
           f"(median {int(np.median(dur[ok]))}). Window {W} <= shortest "
           f"{int(dur[ok].min())}: {'OK' if W <= dur[ok].min() else 'TOO LONG'}", flush=True)
 
+    # The two aggregations are keyed on the same episode ids and both sort by np.unique,
+    # so the vectors align. Assert it rather than assume: a silent misalignment here would
+    # pair each episode's signal with another episode's duration and still look plausible.
+    assert np.array_equal(per_ep["action_churn"]["episodes"], ep_ids), \
+        "slot-level and timestep-level aggregations disagree on the episode set"
+
     mag = per_ep["phi_total"][f"first{W}"]
+    ach = per_ep["action_churn"][f"first{W}"]
     results = {}
     for nm, agg in per_ep.items():
         x, y, t = agg[f"first{W}"][ok], dur[ok], ep_task[ok]
-        raw = within_task_spearman(x, y, t)
-        par = within_task_partial(x, y, [mag[ok]], t) if nm != "phi_total" else None
-        results[nm] = {"raw": raw, "partial_magnitude": par}
+        results[nm] = {
+            "raw": within_task_spearman(x, y, t),
+            # phi_total and action_churn are the controls; partialling either on itself is
+            # degenerate, so those cells are left empty rather than filled with a zero that
+            # would read as a collapsed effect.
+            "partial_magnitude": (None if nm == "phi_total"
+                                  else within_task_partial(x, y, [mag[ok]], t)),
+            "partial_action_churn": (None if nm == "action_churn"
+                                     else within_task_partial(x, y, [ach[ok]], t)),
+            "partial_both": (None if nm in ("phi_total", "action_churn")
+                             else within_task_partial(x, y, [mag[ok], ach[ok]], t)),
+        }
 
     summary = {"rollout_dir": args.rollout_dir, "window": W, "row_perm": perm.tolist(),
                "n_success": int(ok.sum()), "n_episodes": int(ep_ids.size),
@@ -196,17 +212,25 @@ def main() -> None:
                "results": results}
     json.dump(summary, open(args.out, "w"), indent=2, default=float)
 
-    print(f"\n{'signal':<20}{'rho|task':>10}{'+tasks':>8}{'partial|mag':>13}")
+    def cell(v):
+        return f"{v['mean']:+.3f} {v['n_positive']}/{v['n_tasks']}" if v else "  (control)"
+
+    print(f"\n{'signal':<20}{'rho|task':>10}{'+tasks':>8}"
+          f"{'|mag':>14}{'|action_churn':>16}{'|both':>14}")
     for nm in ("task_margin", "task_margin_SHUF", "mu_t", "share", "phi_total", "margin",
                "feature_churn", "feature_returns", "action_churn", "action_returns"):
         r = results[nm]
-        pm = r["partial_magnitude"]
-        pstr = f"{pm['mean']:+.3f}" if pm else "  (control)"
         print(f"{nm:<20}{r['raw']['mean']:>+10.3f}{r['raw']['n_positive']:>5}/"
-              f"{r['raw']['n_tasks']:<3}{pstr:>13}")
+              f"{r['raw']['n_tasks']:<3}{cell(r['partial_magnitude']):>14}"
+              f"{cell(r['partial_action_churn']):>16}{cell(r['partial_both']):>14}")
     print("\nPositive rho = the signal is HIGHER in episodes that took LONGER.")
+    print("Each partial cell shows the mean and how many of the 10 tasks agreed in sign.")
     print("task_margin must beat task_margin_SHUF, or it is reading what every C row shares.")
-    print("Anything mechanistic must beat action_churn, or the dictionary was not needed.")
+    print("\nTHE COLUMN THAT DECIDES IT is |action_churn. A stuck robot repeats its command,")
+    print("and gate 2 showed the constant prior favours the modal action bins -- so `share`")
+    print("and action churn may be one phenomenon read two ways. If `share` survives that")
+    print("partial it carries information the commanded actions do not; if it collapses, a")
+    print("two-line statistic on the robot's own commands is as good as the dictionary.")
     print(f"\n[dur] wrote {args.out}")
 
 
