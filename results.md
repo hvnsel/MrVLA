@@ -27,6 +27,13 @@ recurs**, split into two axes:
 - **Net.** "General" and "recurrent-across-models" are two different properties.
   Path A is the finding; Path B is the boundary condition plus a methods
   contribution (a properly-defined causal-recurrence metric).
+- **Part 3 (below).** The first link from the decomposition to behaviour. A closed-loop
+  collection that carries both the action-position residuals and the episode outcome — the two
+  had never been in the same dataset — shows that **coalition churn and bias share predict how
+  long a successful episode takes** (rho −0.340 and +0.285 fully controlled, p = 0.0006 and
+  0.002, both clearing correction for the ten signals tried). Episode FAILURE, by contrast, is
+  a degenerate target on LIBERO: duration predicts it at AUROC 1.000, and eight signals against
+  it are null.
 - **Part 2 (below).** A measurement-validity pass over our own results. Path A now
   replicates in all four suites against a zero floor; concentration is quantified;
   the ablation null is bounded rather than absent; the "generality is gripper/phase
@@ -960,7 +967,222 @@ published numbers. **That should be a deliberate decision before publication, no
 
 ---
 
+# Part 3 — Behaviour: does anything internal predict what the policy DOES? (2026-08)
+
+Parts 1 and 2 characterised features and audited the measurements. Neither touched behaviour,
+for a structural reason: **internals and outcomes lived in disjoint datasets.** A1 stores the
+seven action-position residuals but replays demonstrations, so `success` is the constant 1.
+`libero_collect` carries real success labels but stores the mean-pooled prefill vector, which
+is not what decodes the action (§2.3). Part 3 builds the intersection and uses it.
+
+Everything here is the `goal` suite.
+
+## P11. The closed-loop collection, and two canaries that had to pass first
+
+`collect_action_rollouts.py` drives the policy closed-loop while capturing the L31 residual at
+each of the 7 decode positions, the action actually executed, and the episode outcome. Rows are
+buffered per episode and committed only once the outcome is known, so every row carries a true
+label.
+
+**500 episodes (50 init states x 10 tasks), 380 successes, 120 failures — 76.0%, matching the
+published baseline exactly.** 562,072 slot-decisions, ~5 GB.
+
+Two things had to hold before any of it was interpretable, and both are results in their own
+right:
+
+| canary | value | why it mattered |
+|---|---|---|
+| argmax recovery | **0.997–0.999** per slot | `predict_action` returns the action, not the tokens, so the emitted bin is recovered by argmax. The executed action is stored precisely to check that recovery rather than assume it. |
+| sufficiency on rollout residuals | **0.9497** (features 0.5392, bias 0.4105, error 0.0503) | The SAE was trained on demo-replay states; these are self-generated. Demo replay gave 0.9361. **The decomposition transfers to states the policy produced itself** — this could have closed the whole line and did not. |
+
+*Methods note, recorded because it cost a full run.* Four sharded workers wrote
+`shard_00000.npz` onward into one directory, each with its own counter starting at zero, and
+overwrote each other. 500 episodes were collected and 135 survived; the analysis globbed what
+was left and reported a complete table of AUROCs on a 27% subset with no indication anything
+was missing. Shards and manifests now carry a per-worker prefix and the writer refuses to
+overwrite. **The failure mode was silence, not error.**
+
+---
+
+## P12. Episode failure is a degenerate target on LIBERO (methods finding)
+
+`done` fires only on success, so a failed episode always runs to the step cap:
+
+| | p5 | p50 | p95 |
+|---|---|---|---|
+| failure length | 300 | 300 | 300 |
+| success length | 72 | 99.5 | 200 |
+
+**Episode duration predicts failure at AUROC 1.000, with 0.0% overlap between the two
+distributions.** Length is not a confound sitting beside the label — it is very nearly a
+restatement of it.
+
+Two consequences. First, no covariate adjustment can rescue an episode-mean statistic:
+residualising on duration would remove the outcome along with the confound. Second, and beyond
+this project: **any episode-level failure-prediction AUROC on LIBERO is partly reading a
+clock** unless its aggregation is explicitly length-matched. Worth checking against
+probe-on-hidden-state monitors that aggregate over whole episodes.
+
+The signature is visible in our own numbers. Every signal peaked at the whole-episode mean and
+collapsed in fixed windows:
+
+| signal | discrimination at `mean` | at `first10` |
+|---|---|---|
+| share | 0.784 | 0.521 |
+| mu_t@q25 | 0.761 | 0.505 |
+| margin | 0.737 | 0.574 |
+| phi_total | 0.638 | 0.544 |
+
+Five structurally different quantities behaving identically points at a shared driver, and the
+driver is duration.
+
+---
+
+## P13. Eight signals against binary failure: all null
+
+Scored on length-matched windows (every episode contributes exactly N timesteps), pooled and
+per task, with bootstrap CIs over episodes:
+
+| signal | best fixed-window discrimination | verdict |
+|---|---|---|
+| `mu_t@q25`, `mu_t@q50` | 0.51–0.57 | null; sign flips across windows |
+| `share` | 0.52–0.58 | null |
+| `phi_total` | 0.54–0.59 | null |
+| top-2 `margin` | 0.574 | null — **the baseline fails too** |
+| feature churn / period-2 returns | 0.52–0.58 | null; beaten by the action-space equivalent |
+| probe(z) / probe(h), LOTO ridge | 0.626 vs null 0.630; 0.535 vs null 0.524 | null (p = 0.61, 0.43) |
+| **action churn** | **0.678** | **the only real predictor found** |
+
+At 120 failures the AUROC SE is ~0.05, so anything between 0.55 and 0.60 is unresolvable —
+this is a **bounded** null, in P3's sense, not a demonstrated absence.
+
+The honest reading: *no internal signal predicts failure better than a two-line statistic on
+the robot's own commanded actions.* Note `margin` failing too — the finding is not "the
+mechanistic signal loses to the scalar baseline", it is that **nothing measured before
+divergence predicts failure at this sample size.**
+
+*A defect in the probe, recorded.* Its permutation null sits at 0.630 rather than 0.5, because
+out-of-fold scores are pooled across folds whose ridge fits carry different offsets. The null
+captures the bias so the conclusion holds, but it eats most of the power. Scoring within task
+and averaging would fix it.
+
+---
+
+## P14. Duration among successes: the first uncontaminated target, and two positive results
+
+Dropping the failures removes the degeneracy — among the 380 successes, duration runs 59 to 299
+steps (median 99) and has no definitional link to anything. Signals are averaged over the first
+**50 timesteps** (<= the shortest success, so every episode contributes exactly 50), correlated
+with duration by Spearman **within each task** and averaged. Pooling across tasks would read
+"this task is slow" as signal.
+
+### The control taxonomy, which is the methods contribution here
+
+A control is valid if it is a common cause of predictor and outcome. It is invalid if it sits
+on the path from predictor to outcome. LIBERO is deterministic from a fixed init state, so
+there is no exogenous during-episode variation — **only pre-episode variables can be
+confounders. Everything measured during the episode is downstream of the policy.**
+
+| control | what it asks | valid as a confound control? |
+|---|---|---|
+| `phi_total` (total causal drive) | is this more than total feature activity? | yes — a co-descriptor of the same decision |
+| **initial geometry** (gripper-to-object distance at the init state, extracted by resetting the sim to each stored init state; no rollouts) | is this more than how far away things started? | **yes — fixed before the policy acts** |
+| action churn, path length, straightness, gripper state | — | **no.** Computed from the commanded actions, i.e. the decisions being scored. Conditioning on them estimates a direct effect when the question is a total effect. |
+
+That distinction was reached the hard way: `share` collapses under the behavioural controls
+(+0.127) and survives the exogenous one (+0.317), and the second is the one that answers the
+objection.
+
+### Results, fully controlled (magnitude + initial geometry, no mediators)
+
+Per-task rhos are noisy at ~38 successes per task, so the test is over the ten task-level
+values: Fisher-z, one-sample t against zero, df = 9.
+
+| signal | raw rho | controlled rho | tasks agreeing | t | p | Bonferroni (10 tests) |
+|---|---|---|---|---|---|---|
+| **feature churn** | −0.351 | **−0.340** | 9/10 | −5.20 | **0.00056** | **clears** |
+| **bias share** | +0.363 | **+0.285** | 8/10 | +4.27 | **0.0021** | **clears** |
+| `mu_t` | −0.368 | −0.251 | 7/10 | −2.81 | 0.020 | no |
+| task margin | +0.143 | +0.182 | 7/10 | +1.97 | 0.080 | no |
+| task margin, C rows SHUFFLED | +0.105 | +0.069 | 6/10 | +0.86 | 0.41 | — |
+
+**Two signals survive.**
+
+- **Coalition churn.** The more the driving coalition turns over between consecutive
+  timesteps, the faster the episode finishes. Cleanest of the two: no bias term, no
+  bin-dependent scale, purely which features are active.
+- **Bias share.** The more of the action margin the constant prior carries early, the longer
+  the episode takes.
+
+The confound is real and does not explain them: initial gripper-to-object distance
+independently predicts duration at **+0.342, 10/10 tasks**, and `share` moves only +0.363 to
++0.317 under it.
+
+*The sign test was discarding the result.* At 8/10 `share` reads p = 0.11, but the ten task
+rhos are consistent in magnitude and the t-test puts it at 0.002. Both statistics are reported
+because the sign test is assumption-free and the t-test uses information it throws away.
+
+### Retracted
+
+**"Specialist reliance predicts efficiency" does not survive.** `mu_t` was never significant
+raw (8/10, p = 0.11); it reached 9/10 only under `|mag` and `|kin`, and the latter is a
+mediator column. Under the valid controls it is −0.251 at p = 0.020, which does not clear
+correction for ten signals. There is a clean mechanism for the shrinkage: `mu_t` is the share
+of drive from low-breadth, scene-specific features, which fire when there is scene nearby — so
+it is partly an inverse-proximity readout, and proximity is what the geometry control removes.
+
+**Task-appropriateness is null.** Matching a decision's causal profile against the task's own
+`C` row versus the other nine (the first use of Path A's `C` matrix for anything but the
+participation ratio) gives +0.182 against a shuffled-row floor of +0.069. Neither clears.
+
+---
+
+## P15. What Part 3 does and does not establish
+
+**Does.** The action decomposition corresponds to something behavioural. Two internal
+quantities predict how long a successful episode takes, surviving every control that is valid
+under the causal structure, and clearing correction for the number of signals tried. Before
+this, nothing in the programme connected the feature/bias split or the coalition to behaviour
+at all.
+
+**Does not.**
+
+| | |
+|---|---|
+| Causal | Nothing intervenes on either signal. The correlational reading is all that is licensed. |
+| Practically useful | Controlling the robot's own commanded motion leaves `share` at +0.127. That is a mediator so it does not invalidate the effect, but it bounds the incremental value over simply watching the arm — and on the failure target, action churn beat every internal signal outright. |
+| Two findings, or one | `share` and `feature_churn` may be two readouts of one state — a static bias-dominated coalition in transit versus a turning-over feature-driven one in manipulation. **Untested: partial each on the other.** |
+| Interpreted | `\|bias\|` is ~99% determined by which bin was emitted (Gate 0: `frac_var_from_bin` = 0.991), so `share`'s variation is denominator-driven — it is closer to inverse feature coherence scaled by a bin-dependent yardstick than to "how much the bias contributed". `|feat| / phi_total` would measure that directly and has not been run. |
+| Generalised | One suite, one model, one SAE seed, simulation. |
+
+---
+
+---
+
 ## Open threads / next results to land here
+
+### Part 3 (behaviour) — in priority order
+
+- **Are `share` and `feature_churn` one finding or two?** Partial each on the other. They may
+  be two readouts of a single state (static bias-dominated coalition in transit vs turning-over
+  feature-driven one in manipulation). One line, minutes of CPU, and it decides whether P14
+  reports one result or two.
+- **Feature coherence, `|feat| / phi_total`.** Gate 0 showed `|bias|` is ~99% bin-determined,
+  so `share`'s variation is denominator-driven. Coherence measures that directly, with no bias
+  term and no bin-dependent scale. Should be run beside `share`, not instead of it.
+- **What do high-`share` and high-churn moments look like?** `capture_feature_frames.py`
+  already pulls frames at chosen (task, episode, timestep). This is the question no further
+  partialling can answer — whether the signal is transit-vs-manipulation, which would make it
+  real but behaviourally obvious, or something else.
+- **The probe's estimator is biased** (P13): pooling out-of-fold scores across folds with
+  different offsets puts its null at 0.630. Score within task and average. Cheap, and it may
+  change that row from null to something.
+- **Replicate on the other three suites.** Part 3 is `goal`-only. Each needs one rollout
+  collection (~4 h on 4 GPUs, ~5 GB) plus CPU re-analysis.
+- **Log object and gripper pose during rollouts.** The geometry control uses INITIAL distance
+  only. Per-timestep pose would allow a time-varying version, and it costs nothing to store.
+
+### Part 1–2 threads
 
 - **Coalition ablation** (built, not yet run): top-N general vs specialist
   coalitions, per-task success, 5 conditions (baseline / general / specialist /
