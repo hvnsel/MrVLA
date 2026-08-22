@@ -79,6 +79,10 @@ def main() -> None:
                         "<= the shortest episode or short ones drop out and the sample "
                         "silently changes")
     p.add_argument("--top-m", type=int, default=32)
+    p.add_argument("--geometry", default=None,
+                   help="extract_init_geometry.py output. The controls derived from it are "
+                        "EXOGENOUS -- fixed before the policy acts -- so unlike the kin_* "
+                        "columns they cannot be mediators of the very effect being tested.")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -174,10 +178,28 @@ def main() -> None:
     a_rt = aggregate_episodes(base["returns"], aep, ats, asc, windows=(W,))
     per_ep["action_churn"], per_ep["action_returns"] = a_ch, a_rt
 
+    geo = None
+    if args.geometry:
+        gz = np.load(args.geometry, allow_pickle=True)
+        geo = {int(e): (float(a), float(b)) for e, a, b
+               in zip(gz["episode"], gz["d_nearest"], gz["d_mean"])}
+        print(f"[dur] geometry for {len(geo)} init states from {args.geometry}", flush=True)
+
     kin = episode_kinematics(act, aep, ats, W)
     assert np.array_equal(kin["episodes"], per_ep["action_churn"]["episodes"])
     for nm in ("path", "net", "straight", "rot"):
         per_ep[f"kin_{nm}"] = {f"first{W}": kin[nm], "episodes": kin["episodes"]}
+    if geo is not None:
+        eids = kin["episodes"]
+        near = np.array([geo.get(int(e), (np.nan, np.nan))[0] for e in eids])
+        mean = np.array([geo.get(int(e), (np.nan, np.nan))[1] for e in eids])
+        miss = int(np.isnan(near).sum())
+        if miss:
+            print(f"[dur] WARNING {miss}/{eids.size} episodes have no geometry -- was "
+                  f"--trials-per-task the same for both runs? A mismatch does not error, "
+                  f"it pairs episodes with the wrong init state.", flush=True)
+        per_ep["geo_d_nearest"] = {f"first{W}": near, "episodes": eids}
+        per_ep["geo_d_mean"] = {f"first{W}": mean, "episodes": eids}
 
     ref = per_ep["task_margin"]
     ep_ids = ref["episodes"]
@@ -198,7 +220,10 @@ def main() -> None:
     mag = per_ep["phi_total"][f"first{W}"]
     ach = per_ep["action_churn"][f"first{W}"]
     dist = [per_ep[f"kin_{n}"][f"first{W}"][ok] for n in ("path", "net", "straight")]
-    CONTROLS = ("phi_total", "action_churn", "kin_path", "kin_net", "kin_straight", "kin_rot")
+    gcols = ([per_ep[f"geo_{n}"][f"first{W}"][ok] for n in ("d_nearest", "d_mean")]
+             if geo is not None else [])
+    CONTROLS = ("phi_total", "action_churn", "kin_path", "kin_net", "kin_straight",
+                "kin_rot", "geo_d_nearest", "geo_d_mean")
     results = {}
     for nm, agg in per_ep.items():
         x, y, t = agg[f"first{W}"][ok], dur[ok], ep_task[ok]
@@ -212,8 +237,13 @@ def main() -> None:
                                      else within_task_partial(x, y, [ach[ok]], t)),
             "partial_distance": (None if nm in CONTROLS
                                  else within_task_partial(x, y, dist, t)),
+            # The geometry columns are the point of this run: exogenous, fixed before the
+            # policy acts, so they cannot absorb a mediated effect the way kin_* can.
+            "partial_geometry": (None if nm in CONTROLS or not gcols
+                                 else within_task_partial(x, y, gcols, t)),
             "partial_all": (None if nm in CONTROLS
-                            else within_task_partial(x, y, [mag[ok], ach[ok]] + dist, t)),
+                            else within_task_partial(x, y, [mag[ok], ach[ok]] + dist + gcols,
+                                                     t)),
         }
 
     summary = {"rollout_dir": args.rollout_dir, "window": W, "row_perm": perm.tolist(),
@@ -225,19 +255,31 @@ def main() -> None:
     def cell(v):
         return f"{v['mean']:+.3f} {v['n_positive']}/{v['n_tasks']}" if v else "  (control)"
 
+    order = ["task_margin", "task_margin_SHUF", "mu_t", "share", "margin",
+             "feature_churn", "feature_returns", "action_returns",
+             "phi_total", "action_churn", "kin_path", "kin_net", "kin_straight", "kin_rot"]
+    if geo is not None:
+        order += ["geo_d_nearest", "geo_d_mean"]
     print(f"\n{'signal':<20}{'rho|task':>10}{'+tasks':>8}"
-          f"{'|mag':>13}{'|churn':>13}{'|distance':>13}{'|ALL':>13}")
-    for nm in ("task_margin", "task_margin_SHUF", "mu_t", "share", "margin",
-               "feature_churn", "feature_returns", "action_returns",
-               "phi_total", "action_churn", "kin_path", "kin_net", "kin_straight", "kin_rot"):
+          f"{'|mag':>13}{'|churn':>13}{'|kin':>13}{'|GEOMETRY':>13}{'|ALL':>13}")
+    for nm in order:
         r = results[nm]
         print(f"{nm:<20}{r['raw']['mean']:>+10.3f}{r['raw']['n_positive']:>5}/"
               f"{r['raw']['n_tasks']:<3}{cell(r['partial_magnitude']):>13}"
               f"{cell(r['partial_action_churn']):>13}"
-              f"{cell(r.get('partial_distance')):>13}{cell(r.get('partial_all')):>13}")
+              f"{cell(r.get('partial_distance')):>13}"
+              f"{cell(r.get('partial_geometry')):>13}{cell(r.get('partial_all')):>13}")
     print("\nPositive rho = the signal is HIGHER in episodes that took LONGER.")
     print("Each partial cell shows the mean and how many of the 10 tasks agreed in sign.")
     print("task_margin must beat task_margin_SHUF, or it is reading what every C row shares.")
+    if geo is not None:
+        print("\nTHE COLUMN THAT SETTLES IT is |GEOMETRY. geo_* is where the gripper and the")
+        print("objects actually START -- fixed before the policy acts, so unlike kin_* it")
+        print("cannot be a mediator of the effect being tested. kin_* is computed from the")
+        print("commanded actions, i.e. the policy's own behaviour, so if the chain runs")
+        print("share -> motion -> duration then partialling on kin_* deletes the path the")
+        print("effect travels along and understates it. Survive |GEOMETRY and the signal is")
+        print("real; die there too and it was distance all along.")
     print("\nkin_* are the DISTANCE controls, derived from the commanded delta-poses: how")
     print("far the robot travelled, how far it got, and how straight it went. If an episode")
     print("simply started further from the object it would take longer AND leave the early")
