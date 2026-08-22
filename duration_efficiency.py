@@ -241,6 +241,15 @@ def main() -> None:
             # policy acts, so they cannot absorb a mediated effect the way kin_* can.
             "partial_geometry": (None if nm in CONTROLS or not gcols
                                  else within_task_partial(x, y, gcols, t)),
+            # THE NUMBER TO PUBLISH. Both valid controls together and nothing else:
+            # magnitude (is this more than total causal drive?) and initial geometry (is
+            # this more than how far away things started?). Everything else available is
+            # measured DURING the episode and is therefore downstream of the policy, so
+            # conditioning on it estimates a direct effect rather than the total effect
+            # being asked about. `partial_all` is kept for the record and must not be
+            # quoted as the controlled estimate -- it contains those mediators.
+            "partial_valid": (None if nm in CONTROLS
+                              else within_task_partial(x, y, [mag[ok]] + gcols, t)),
             "partial_all": (None if nm in CONTROLS
                             else within_task_partial(x, y, [mag[ok], ach[ok]] + dist + gcols,
                                                      t)),
@@ -261,17 +270,24 @@ def main() -> None:
     if geo is not None:
         order += ["geo_d_nearest", "geo_d_mean"]
     print(f"\n{'signal':<20}{'rho|task':>10}{'+tasks':>8}"
-          f"{'|mag':>13}{'|churn':>13}{'|kin':>13}{'|GEOMETRY':>13}{'|ALL':>13}")
+          f"{'|mag':>13}{'|GEO':>13}{'|VALID':>14}{'|churn*':>13}{'|kin*':>13}{'|ALL*':>13}")
     for nm in order:
         r = results[nm]
         print(f"{nm:<20}{r['raw']['mean']:>+10.3f}{r['raw']['n_positive']:>5}/"
               f"{r['raw']['n_tasks']:<3}{cell(r['partial_magnitude']):>13}"
+              f"{cell(r.get('partial_geometry')):>13}"
+              f"{cell(r.get('partial_valid')):>14}"
               f"{cell(r['partial_action_churn']):>13}"
-              f"{cell(r.get('partial_distance')):>13}"
-              f"{cell(r.get('partial_geometry')):>13}{cell(r.get('partial_all')):>13}")
+              f"{cell(r.get('partial_distance')):>13}{cell(r.get('partial_all')):>13}")
     print("\nPositive rho = the signal is HIGHER in episodes that took LONGER.")
     print("Each partial cell shows the mean and how many of the 10 tasks agreed in sign.")
     print("task_margin must beat task_margin_SHUF, or it is reading what every C row shares.")
+    print("\n|VALID IS THE NUMBER TO QUOTE: magnitude and initial geometry together, and")
+    print("nothing else. Those are the only two controls that are not measured DURING the")
+    print("episode. Columns marked * condition on the robot's own later behaviour, which is")
+    print("downstream of the decisions being scored -- they answer 'what does this add over")
+    print("watching the arm?', not 'is this confounded?', and must not be quoted as the")
+    print("controlled estimate.")
     if geo is not None:
         print("\nTHE COLUMN THAT SETTLES IT is |GEOMETRY. geo_* is where the gripper and the")
         print("objects actually START -- fixed before the policy acts, so unlike kin_* it")
