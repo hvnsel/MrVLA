@@ -1141,8 +1141,37 @@ scored two null tasks as full votes against.
 **And the effect is heterogeneous, which belongs in the record.** Where `share` is present it
 ranges 0.16 to 0.53, a threefold spread, plus two tasks where it is flat. `feature_churn` is
 more uniform at 0.27 to 0.57 but still varies twofold. This is not "bias share predicts
-duration in this policy"; it is "in most tasks, strongly in some, not at all in two". Which
-tasks are flat is worth knowing rather than averaging away.
+duration in this policy"; it is "in most tasks, strongly in some, not at all in two".
+
+Named, with each task's success rate:
+
+| id | share | churn | succ | task |
+|---|---|---|---|---|
+| 0 | −0.042 | −0.064 | 32/50 | open the middle drawer of the cabinet |
+| 9 | −0.030 | −0.362 | 29/50 | put the wine bottle on the rack |
+| 6 | +0.162 | −0.267 | 33/50 | put the cream cheese in the bowl |
+| 5 | +0.164 | +0.048 | 38/50 | push the plate to the front of the stove |
+| 2 | +0.362 | −0.426 | 44/50 | put the wine bottle on top of the cabinet |
+| 8 | +0.371 | −0.447 | 41/50 | put the bowl on the plate |
+| 1 | +0.424 | −0.393 | 48/50 | put the bowl on the stove |
+| 4 | +0.437 | −0.567 | 46/50 | put the bowl on top of the cabinet |
+| 3 | +0.474 | −0.567 | 24/50 | open the top drawer and put the bowl inside |
+| 7 | +0.529 | −0.352 | 45/50 | turn on the stove |
+
+**The flat tasks are not the easy ones.** The pre-registered guess was restriction of range —
+a task that always finishes quickly has little duration variance for anything to correlate
+with — which predicts the flat tasks should be the high-success, short ones. They are the
+LOW-success ones (32/50, 29/50), and task 3 refutes the account outright: hardest task in the
+suite at 24/50, yet strongest churn (−0.567) and near-top share. Difficulty does not suppress
+the effect. Success rate and share effect size do correlate across tasks at rho ~0.47, but
+task 3 is a large outlier driving most of it and n = 10.
+
+*One pattern, offered as a hypothesis and not a finding.* Tasks 0 and 5 are the only two flat
+on BOTH signals, and the only two that manipulate without transporting an object (open a
+drawer, push a plate) — consistent with the transit-versus-manipulation reading, since a task
+with no transport has no transit phase for either signal to index. Task 7 (turn on the stove)
+has no transport either and scores +0.529 / −0.352, so the taxonomy does not hold. Ten points
+is not enough to build one from; the frames are the way to check it.
 
 ### Retracted
 
