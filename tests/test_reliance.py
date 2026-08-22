@@ -30,8 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mrvla.prior_gates import prior_vectors  # noqa: E402
 from mrvla.readout import signature_matrix  # noqa: E402
 from mrvla.reliance import (  # noqa: E402
-    aggregate_episodes, auroc, auroc_boot, reliance_signals, sufficiency,
-    through_origin_slope,
+    aggregate_episodes, auroc, auroc_boot, length_diagnostics, reliance_signals,
+    sufficiency, through_origin_slope,
 )
 
 D, F, NB = 24, 40, 16
@@ -156,15 +156,79 @@ def test_aggregate_carries_the_episode_outcome():
     assert list(out["success"]) == [1, 0, 1]
 
 
-def test_episode_shorter_than_the_window_is_nan_not_imputed():
+def test_episode_shorter_than_the_window_is_excluded_not_partially_counted():
+    """Changed deliberately. This used to assert that a short episode "contributes what it
+    has", which is the duration leak: the column then mixes 3-step and 50-step averages and
+    the difference tracks the outcome. Under require_full it is NaN and dropped."""
     ep = np.zeros(3, int)
     out = aggregate_episodes(np.ones(3), ep, np.array([0, 1, 2]), np.ones(3, int),
-                            windows=(2, 50))
-    assert np.isfinite(out["first2"][0])
-    assert np.isfinite(out["first50"][0])      # short episode contributes what it has
+                             windows=(2, 50))
+    assert np.isfinite(out["first2"][0])          # 3 steps can fill a 2-step window
+    assert np.isnan(out["first50"][0])            # 3 steps cannot fill a 50-step window
+    loose = aggregate_episodes(np.ones(3), ep, np.array([0, 1, 2]), np.ones(3, int),
+                               windows=(50,), require_full=False)
+    assert np.isfinite(loose["first50"][0])       # the old behaviour, still reachable
+
     out2 = aggregate_episodes(np.array([np.nan] * 3), ep, np.array([0, 1, 2]),
                               np.ones(3, int), windows=(2,))
-    assert np.isnan(out2["first2"][0])         # all-NaN contributes nothing, not zero
+    assert np.isnan(out2["first2"][0])            # all-NaN contributes nothing, not zero
+
+
+# ---------------------------------------------------------------------------
+# duration -- the confound that cannot be partialled out
+# ---------------------------------------------------------------------------
+def test_partial_windows_leak_duration_unless_full_is_required():
+    """The reason require_full defaults True.
+
+    Successes are short and failures run to the cap, so with require_full=False a short
+    success contributes fewer steps to first50 than every failure does -- the column then
+    encodes duration, which is the thing it exists to exclude. Here the signal is pure noise
+    with a per-timestep drift, so ANY duration leak shows up as discrimination.
+    """
+    r = np.random.default_rng(7)
+    ep, ts, sc, vals = [], [], [], []
+    for e in range(300):
+        fail = e % 4 == 0
+        n = 100 if fail else int(r.integers(15, 40))     # failures long, successes short
+        for t in range(n):
+            for _ in range(7):
+                ep.append(e); ts.append(t); sc.append(0 if fail else 1)
+                vals.append(0.01 * t + r.normal(0, 0.05))   # drifts with time, nothing else
+    ep, ts, sc, vals = map(np.asarray, (ep, ts, sc, vals))
+
+    leaky = aggregate_episodes(vals, ep, ts, sc, windows=(50,), require_full=False)
+    tight = aggregate_episodes(vals, ep, ts, sc, windows=(50,), require_full=True)
+    a_leak = auroc(leaky["first50"], 1 - leaky["success"])
+    a_tight = auroc(tight["first50"], 1 - tight["success"])
+    assert abs(a_leak - 0.5) > 0.2, a_leak          # duration leaks straight through
+    assert np.isnan(a_tight), a_tight               # only failures fill a 50-step window
+
+
+def test_length_is_reported_per_episode():
+    ep = np.repeat([0, 1], [7 * 3, 7 * 5])
+    ts = np.concatenate([np.repeat(np.arange(3), 7), np.repeat(np.arange(5), 7)])
+    out = aggregate_episodes(np.ones(ep.size), ep, ts, np.ones(ep.size, int), windows=())
+    assert list(out["length"]) == [3, 5], out["length"]
+
+
+def test_length_diagnostics_flags_a_disjoint_duration_split():
+    """When done fires only on success, failures all hit the cap and the distributions
+    barely overlap -- which is what makes a length-matched comparison unavailable."""
+    fail_len = np.full(50, 300.0)
+    ok_len = np.random.default_rng(0).integers(60, 200, size=150).astype(float)
+    d = length_diagnostics(np.concatenate([fail_len, ok_len]),
+                           np.concatenate([np.ones(50, int), np.zeros(150, int)]))
+    assert d["auroc"] > 0.99, d["auroc"]
+    assert d["overlap_frac_success_ge_min_failure"] == 0.0, d
+
+
+def test_length_diagnostics_reports_real_overlap_when_it_exists():
+    r = np.random.default_rng(1)
+    d = length_diagnostics(np.concatenate([r.integers(50, 300, 100).astype(float),
+                                           r.integers(50, 300, 100).astype(float)]),
+                           np.concatenate([np.ones(100, int), np.zeros(100, int)]))
+    assert 0.3 < d["auroc"] < 0.7, d["auroc"]
+    assert d["overlap_frac_success_ge_min_failure"] > 0.5, d
 
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,8 @@ from mrvla.stats import rankdata_average
 
 __all__ = [
     "through_origin_slope", "sufficiency", "reliance_signals",
-    "aggregate_episodes", "auroc", "auroc_boot", "DEFAULT_WINDOWS", "SUFFICIENCY_FLOOR",
+    "aggregate_episodes", "auroc", "auroc_boot", "length_diagnostics",
+    "DEFAULT_WINDOWS", "SUFFICIENCY_FLOOR",
 ]
 
 DEFAULT_WINDOWS = (5, 10, 20, 50)
@@ -143,16 +144,25 @@ def reliance_signals(z: np.ndarray, l2: np.ndarray, mu: np.ndarray, r: np.ndarra
 # episode aggregation
 # ---------------------------------------------------------------------------
 def aggregate_episodes(values: np.ndarray, episode: np.ndarray, timestep: np.ndarray,
-                       success: np.ndarray, windows=DEFAULT_WINDOWS) -> dict:
+                       success: np.ndarray, windows=DEFAULT_WINDOWS,
+                       require_full: bool = True) -> dict:
     """Per-episode aggregates of a per-decision signal, plus that episode's outcome.
 
-    Returns `episodes`, `success`, and one vector per aggregate: `mean`, `max`, and
-    `first{N}` for each window. Windows are in TIMESTEPS, not rows -- a timestep is seven
-    rows (one per action slot), and a window measured in rows would silently cover a
-    seventh of the intended episode prefix.
+    Returns `episodes`, `success`, `length` (timesteps), and one vector per aggregate:
+    `mean`, `max`, and `first{N}` per window. Windows are in TIMESTEPS, not rows -- a
+    timestep is seven rows, and a window measured in rows would silently cover a seventh of
+    the intended episode prefix.
 
-    An episode shorter than a window contributes whatever it has; an episode with no rows in
-    the window gets NaN and is dropped by the scorer rather than imputed.
+    `require_full=True` (the default) gives an episode NaN for `first{N}` unless it actually
+    has N timesteps, so every episode contributing to that column contributes EXACTLY N of
+    them. This is not fussiness. In LIBERO `done` fires only on success, so a failure always
+    runs to the step cap and length is very nearly the outcome itself. An episode-mean is
+    therefore a duration proxy, and a partial window is a partial duration proxy: with
+    `require_full=False` a 30-step success contributes 30 steps to `first50` while every
+    failure contributes 50, and the column leaks the very thing it exists to exclude.
+
+    `mean` and `max` cannot be rescued this way and are reported only for contrast -- see
+    `length_diagnostics` for why no covariate adjustment fixes them either.
     """
     ep = np.asarray(episode, dtype=np.int64)
     ts = np.asarray(timestep, dtype=np.int64)
@@ -160,7 +170,8 @@ def aggregate_episodes(values: np.ndarray, episode: np.ndarray, timestep: np.nda
     sc = np.asarray(success, dtype=np.int64)
 
     uniq = np.unique(ep)
-    out: dict = {"episodes": uniq, "success": np.empty(uniq.size, dtype=np.int64)}
+    out: dict = {"episodes": uniq, "success": np.empty(uniq.size, dtype=np.int64),
+                 "length": np.zeros(uniq.size, dtype=np.int64)}
     keys = ["mean", "max"] + [f"first{w}" for w in windows]
     for k in keys:
         out[k] = np.full(uniq.size, np.nan)
@@ -169,15 +180,48 @@ def aggregate_episodes(values: np.ndarray, episode: np.ndarray, timestep: np.nda
         m = ep == e
         vals, tss = v[m], ts[m]
         out["success"][i] = int(sc[m][0])
+        n_steps = int(np.unique(tss).size)
+        out["length"][i] = n_steps
         fin = np.isfinite(vals)
         if fin.any():
             out["mean"][i] = float(vals[fin].mean())
             out["max"][i] = float(vals[fin].max())
         for w in windows:
+            if require_full and n_steps < w:
+                continue                       # leave NaN: this episode cannot fill the window
             wm = fin & (tss < w)
             if wm.any():
                 out[f"first{w}"][i] = float(vals[wm].mean())
     return out
+
+
+def length_diagnostics(length: np.ndarray, failure: np.ndarray) -> dict:
+    """How much of the outcome does raw episode DURATION already carry?
+
+    The answer decides whether any covariate adjustment is even available. In LIBERO `done`
+    fires only on success, so a failed episode always runs to the step cap: length is not a
+    confound to be partialled out, it is close to a restatement of the label. When
+    `auroc` here approaches 1 and `overlap` approaches 0, success and failure durations are
+    nearly disjoint, so there is NO length-matched comparison to make -- residualising on
+    length would remove the outcome along with the confound and return 0.5 by construction.
+
+    `overlap` is the fraction of successes at least as long as the shortest failure: the
+    share of the data on which a matched comparison could even be attempted.
+    """
+    L = np.asarray(length, dtype=np.float64)
+    y = np.asarray(failure, dtype=np.int64)
+    m = np.isfinite(L)
+    L, y = L[m], y[m]
+    fail_L, ok_L = L[y == 1], L[y == 0]
+    ov = (float((ok_L >= fail_L.min()).mean()) if fail_L.size and ok_L.size else float("nan"))
+    q = lambda a: [float(np.percentile(a, p)) for p in (5, 50, 95)] if a.size else []
+    return {
+        "auroc": auroc(L, y),
+        "overlap_frac_success_ge_min_failure": ov,
+        "failure_len_p5_p50_p95": q(fail_L),
+        "success_len_p5_p50_p95": q(ok_L),
+        "n_fail": int(y.sum()), "n_ok": int((y == 0).sum()),
+    }
 
 
 # ---------------------------------------------------------------------------
