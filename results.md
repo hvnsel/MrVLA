@@ -1122,6 +1122,28 @@ independently predicts duration at **+0.342, 10/10 tasks**, and `share` moves on
 rhos are consistent in magnitude and the t-test puts it at 0.002. Both statistics are reported
 because the sign test is assumption-free and the t-test uses information it throws away.
 
+### The per-task values, which say more than either test
+
+Fully controlled, sorted:
+
+```
+share          -0.042  -0.030 | 0.162  0.164 | 0.362  0.371  0.424  0.437  0.474  0.529
+feature_churn  +0.048  -0.064 | -0.267 -0.352 -0.362 -0.393 -0.426 -0.447 -0.567 -0.567
+```
+
+**No task contradicts either signal.** The apparent dissenters sit at zero, not on the other
+side: -0.042 and -0.030 for `share`, +0.048 for `feature_churn`. At ~38 successes per task the
+SE is ~0.16, so all three are indistinguishable from no effect. The defensible statement is
+therefore stronger than the fraction suggests — *two of ten tasks show nothing and the other
+eight all point the same way* — and it is also why the sign test underperformed here: it
+scored two null tasks as full votes against.
+
+**And the effect is heterogeneous, which belongs in the record.** Where `share` is present it
+ranges 0.16 to 0.53, a threefold spread, plus two tasks where it is flat. `feature_churn` is
+more uniform at 0.27 to 0.57 but still varies twofold. This is not "bias share predicts
+duration in this policy"; it is "in most tasks, strongly in some, not at all in two". Which
+tasks are flat is worth knowing rather than averaging away.
+
 ### Retracted
 
 **"Specialist reliance predicts efficiency" does not survive.** `mu_t` was never significant
