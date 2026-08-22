@@ -57,7 +57,8 @@ from identify_features import adjusted_breadth
 from mrvla.prior_gates import prior_vectors
 from mrvla.readout import signature_matrix, unnormalized_logits
 from mrvla.reliance import (
-    DEFAULT_WINDOWS, aggregate_episodes, auroc_boot, reliance_signals, sufficiency,
+    DEFAULT_WINDOWS, aggregate_episodes, auroc_boot, length_diagnostics, reliance_signals,
+    sufficiency,
 )
 from mrvla.stats import rankdata_average, tie_fraction
 from run_attribution import load_sae, sae_encode_full
@@ -198,6 +199,21 @@ def main() -> None:
             f"0.80, so the decomposition does not transfer to self-generated states and every "
             f"signal would be read off a basis that no longer holds. --force to override.")
 
+    # Duration first: it decides whether `mean`/`max` can be interpreted at all.
+    ep_probe = aggregate_episodes(cat["margin"], cat["episode"], cat["timestep"],
+                                  cat["success"], windows=DEFAULT_WINDOWS)
+    lend = length_diagnostics(ep_probe["length"], 1 - ep_probe["success"])
+    print(f"\n[rel] DURATION  episode length alone predicts failure at AUROC "
+          f"{lend['auroc']:.3f}. failure len p5/50/95 {lend['failure_len_p5_p50_p95']}, "
+          f"success {lend['success_len_p5_p50_p95']}; only "
+          f"{lend['overlap_frac_success_ge_min_failure']:.1%} of successes are as long as "
+          f"the shortest failure.", flush=True)
+    if lend["auroc"] > 0.9:
+        print("[rel]           Length is effectively the label (done fires only on success), "
+              "so there is NO length-matched\n[rel]           comparison and no partial that "
+              "fixes `mean`/`max`. Read the first{N} columns, which\n[rel]           are "
+              "length-matched by construction.", flush=True)
+
     results: dict = {}
     tasks = np.unique(cat["task_id"])
     ep_ids = np.unique(cat["episode"])
@@ -226,7 +242,8 @@ def main() -> None:
     n_fail = int(results["margin"]["pooled"]["mean"]["n_fail"])
     summary = {"rollout_dir": args.rollout_dir, "sae_dir": args.sae_dir,
                "n_rows": int(cat["margin"].size), "n_episodes": n_ep, "n_failures": n_fail,
-               "sufficiency": suff, "signals": results}
+               "sufficiency": suff, "argmax_recovery": recov, "duration": lend,
+               "signals": results}
     json.dump(summary, open(args.out, "w"), indent=2, default=float)
 
     print(f"\n[rel] {n_ep} episodes, {n_fail} failures\n")
@@ -235,10 +252,17 @@ def main() -> None:
     for sig in SIGNALS:
         row = "".join(f"{results[sig]['pooled'][c]['auroc']:>12.3f}" for c in cols)
         print(f"{sig:<12}{row}")
+    ns = [results["margin"]["pooled"][c]["n"] for c in cols]
+    print(f"{'n episodes':<12}" + "".join(f"{n:>12d}" for n in ns))
+    print(f"{'DURATION':<12}{lend['auroc']:>12.3f}"
+          + "".join(f"{'--':>12}" for _ in cols[1:])
+          + "   <- what mean/max are largely measuring")
     print("\n0.5 = no information. BELOW 0.5 is not a null -- it means the signal predicts "
           "SUCCESS.\nCompare every row against `margin`: a mechanistic signal that does not "
           "beat that scalar\nhas not earned its complexity. Check per_task in the JSON before "
-          "believing any pooled value.")
+          "believing any pooled value.\nfirst{N} columns are LENGTH-MATCHED (every episode "
+          "contributes exactly N steps);\n`mean` and `max` are not, and the DURATION row is "
+          "the ceiling they are drifting toward.")
     print(f"\n[rel] wrote {args.out}")
 
 
